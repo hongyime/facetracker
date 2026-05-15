@@ -1,0 +1,160 @@
+"""Configuration module for Face Tracker application."""
+
+from pydantic_settings import BaseSettings
+from typing import List, Optional
+import json
+
+
+class DriveSource(BaseSettings):
+    """Configuration for a drive source."""
+    path: str
+    type: str = "local"  # local, usb, onedrive
+    priority: int = 1
+    exclude: bool = False
+    on_mount: bool = False
+
+
+class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
+    
+    # Storage Paths
+    face_storage_root: str = "Y:/faces"
+    postgres_data_path: str = "./postgres_data"
+    app_root: str = "C:/facetracker"
+    
+    # Drive Sources
+    drive_sources: List[DriveSource] = []
+    exclude_paths: List[str] = []
+    
+    # Media Formats
+    supported_images: str = ".jpg,.jpeg,.png,.webp,.gif,.bmp,.heic,.heif,.tiff,.tif"
+    supported_raw: str = ".cr2,.cr3,.nef,.arw,.orf,.rw2,.dng,.raf"
+    supported_videos: str = ".mp4,.mov,.m4v,.avi,.mkv,.wmv,.webm,.flv,.3gp"
+    
+    # Face Detection
+    min_face_area_percent: float = 5.0
+    min_laplacian_variance: float = 100.0
+    min_detection_confidence: float = 0.5
+    crop_margin_percent: float = 15.0
+    thumbnail_size: int = 64
+    thumbnail_quality: int = 80
+    
+    # Video Processing
+    video_tracking_fps: int = 3
+    video_embedding_fps: int = 1
+    deepsort_max_age: int = 30
+    deepsort_n_init: int = 1
+    
+    # FAISS Indexing
+    faiss_staging_size: int = 10000
+    faiss_merge_timeout: int = 300
+    faiss_index_type: str = "HNSW64"
+    
+    # OneDrive
+    onedrive_enabled: bool = True
+    onedrive_download_timeout: int = 300
+    onedrive_revert_verify: bool = True
+    onedrive_multi_detect: bool = True
+    onedrive_max_retries: int = 3
+    
+    # Indexing
+    watch_mode: bool = True
+    watch_poll_interval: int = 30
+    index_queue_size: int = 50
+    index_workers: int = 2
+    
+    # Clustering
+    cluster_min_size: int = 5
+    cluster_quality_weighting: bool = True
+    auto_merge_threshold: float = 0.75
+    user_verify_threshold: float = 0.60
+    max_undo_stack: int = 10
+    
+    # Search
+    search_top_k: int = 100
+    search_min_similarity: float = 0.6
+    search_cache_enabled: bool = True
+    
+    # Database
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_db: str = "facetracker"
+    postgres_user: str = "postgres"
+    postgres_password: str = "changeme"
+    
+    # Redis
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    
+    # Dashboard
+    dashboard_port: int = 5151
+    
+    # Logging
+    log_level: str = "INFO"
+    verbose_status: bool = True
+    status_update_interval: int = 5
+    
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+    
+    @property
+    def image_extensions(self) -> List[str]:
+        """Get list of supported image extensions."""
+        return [ext.strip() for ext in self.supported_images.split(",")]
+    
+    @property
+    def raw_extensions(self) -> List[str]:
+        """Get list of supported raw extensions."""
+        return [ext.strip() for ext in self.supported_raw.split(",")]
+    
+    @property
+    def video_extensions(self) -> List[str]:
+        """Get list of supported video extensions."""
+        return [ext.strip() for ext in self.supported_videos.split(",")]
+    
+    @property
+    def all_supported_extensions(self) -> List[str]:
+        """Get all supported file extensions."""
+        return (
+            self.image_extensions + 
+            self.raw_extensions + 
+            self.video_extensions
+        )
+    
+    @property
+    def database_url(self) -> str:
+        """Get PostgreSQL database URL."""
+        return (
+            f"postgresql://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+    
+    @property
+    def redis_url(self) -> str:
+        """Get Redis URL."""
+        return f"redis://{self.redis_host}:{self.redis_port}"
+    
+    @property
+    def thumbnail_cache_path(self) -> str:
+        """Get thumbnail cache path."""
+        return f"{self.face_storage_root}/media/thumbnails"
+    
+    @property
+    def faiss_live_path(self) -> str:
+        """Get FAISS live index path."""
+        return f"{self.face_storage_root}/embeddings/live/face_index.faiss"
+    
+    @property
+    def faiss_staging_dir(self) -> str:
+        """Get FAISS staging directory."""
+        return f"{self.face_storage_root}/embeddings/staging"
+
+
+# Global settings instance
+settings = Settings()
+
+
+def get_settings() -> Settings:
+    """Get the global settings instance."""
+    return settings
