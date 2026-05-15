@@ -14,7 +14,7 @@ from src.engine.tracker import FaceTracker, TrackedFace
 from src.engine.embedder import FaceEmbedder
 from src.engine.quality import QualityScorer
 from src.pipeline.thumbnail import ThumbnailGenerator
-from src.storage.database import DatabaseSession, ImageRecord, FaceRecord
+from src.storage.database import Database, Image, Face
 from src.storage.faiss_index import BatchedFAISSIndex
 from src.discovery.onedrive import OneDriveHandler
 
@@ -30,7 +30,7 @@ class ProcessingResult:
         self.status: str = "pending"  # pending, processing, success, failed
         self.faces_detected: int = 0
         self.faces_processed: int = 0
-        self.face_records: List[FaceRecord] = []
+        self.face_records: List[dict] = []
         self.error_message: Optional[str] = None
         self.processing_time: float = 0.0
         self.is_video: bool = False
@@ -58,7 +58,7 @@ class PipelineProcessor:
 
     def __init__(
         self,
-        db_session: DatabaseSession,
+        db_session,
         faiss_index: BatchedFAISSIndex,
         thumbnail_cache_path: Path,
         use_onedrive: bool = True,
@@ -68,7 +68,7 @@ class PipelineProcessor:
         Initialize pipeline processor.
 
         Args:
-            db_session: Database session manager.
+            db_session: Database session manager or Database instance.
             faiss_index: Batched FAISS index for embeddings.
             thumbnail_cache_path: Base path for thumbnail storage.
             use_onedrive: Enable OneDrive handling.
@@ -92,7 +92,7 @@ class PipelineProcessor:
             margin_ratio=0.15
         )
         
-        self.onedrive = OneDriveHandler() if use_onedrive else None
+        self.onedrive = OneDriveHandler(settings) if use_onedrive else None
         
         # Ensure thumbnail cache directory exists
         self.thumbnail_cache_path.mkdir(parents=True, exist_ok=True)
@@ -164,7 +164,8 @@ class PipelineProcessor:
             self._save_image_record(result)
         
         # Flush FAISS staging if needed
-        self.faiss_index.check_and_merge_staging()
+        if self.faiss_index.needs_merge:
+            self.faiss_index.force_merge()
         
         logger.info(
             f"Completed processing {file_path}: "
