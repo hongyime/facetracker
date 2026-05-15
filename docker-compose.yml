@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: facetracker-postgres
+    environment:
+      POSTGRES_DB: facetracker
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - ${POSTGRES_DATA_PATH:-./postgres_data}:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: facetracker-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+    restart: unless-stopped
+
+  api:
+    build: .
+    container_name: facetracker-api
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ${FACE_STORAGE_ROOT:-Y:/faces}:/app/storage:rw
+      - ${APP_ROOT:-C:/facetracker}:/app/code:ro
+    ports:
+      - "${DASHBOARD_PORT:-5151}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+
+networks:
+  default:
+    name: facetracker-net
+
+volumes:
+  redis_data:
