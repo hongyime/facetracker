@@ -48,6 +48,9 @@ class BatchedFAISSIndex:
         self.live_path = Path(config.faiss_live_path)
         self.staging_dir = Path(config.faiss_staging_dir)
         
+        # IDs file path for persistence
+        self.ids_path = self.live_path.with_suffix('.ids.npy')
+        
         # Initialize empty index if no existing index
         self._initialize_index()
     
@@ -58,6 +61,14 @@ class BatchedFAISSIndex:
                 self.live_index = faiss.read_index(str(self.live_path))
                 self.live_count = self.live_index.ntotal
                 print(f"Loaded existing FAISS index with {self.live_count} vectors")
+                
+                # Load corresponding IDs if available
+                if self.ids_path.exists():
+                    self.live_ids = np.load(str(self.ids_path), allow_pickle=True).tolist()
+                    print(f"Loaded {len(self.live_ids)} face IDs")
+                else:
+                    print(f"Warning: No IDs file found at {self.ids_path}, live_ids will be empty")
+                    self.live_ids = []
             except Exception as e:
                 print(f"Failed to load existing index: {e}. Creating new index.")
                 self._create_new_index()
@@ -89,7 +100,10 @@ class BatchedFAISSIndex:
         """
         # Normalize embedding for cosine similarity
         embedding = embedding.astype(np.float32)
+        if embedding.ndim == 1:
+            embedding = embedding.reshape(1, -1)
         faiss.normalize_L2(embedding)
+        embedding = embedding.flatten()
         
         self.staging_vectors.append(embedding)
         self.staging_ids.append(face_id)
@@ -177,6 +191,9 @@ class BatchedFAISSIndex:
             # Save index to disk
             self._save_index()
             
+            # Save IDs to disk
+            self._save_ids()
+            
             # Clear staging buffer
             self.staging_vectors.clear()
             self.staging_ids.clear()
@@ -194,6 +211,25 @@ class BatchedFAISSIndex:
             temp_path.replace(self.live_path)
         except Exception as e:
             print(f"Error saving FAISS index: {e}")
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+            raise
+    
+    def _save_ids(self) -> None:
+        """Save the live IDs to disk."""
+        if not self.live_ids:
+            return
+        
+        temp_path = self.ids_path.with_suffix('.ids.npy.tmp')
+        
+        try:
+            np.save(str(temp_path), np.array(self.live_ids, dtype=object), allow_pickle=True)
+            # Atomic rename
+            temp_path.replace(self.ids_path)
+        except Exception as e:
+            print(f"Error saving FAISS IDs: {e}")
             try:
                 temp_path.unlink()
             except OSError:

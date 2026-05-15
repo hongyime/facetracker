@@ -55,7 +55,7 @@ class SearchEngine:
         """
         self.faiss_index = faiss_index
         self.config = config
-        self.default_threshold = config.search_default_threshold
+        self.default_threshold = config.search_min_similarity
     
     def search(
         self,
@@ -93,11 +93,11 @@ class SearchEngine:
             return []
         
         # Fetch face details from database
-        stmt = select(Face).where(Face.face_id.in_(face_ids))
+        stmt = select(Face).where(Face.embedding_id.in_(face_ids))
         faces = db_session.execute(stmt).scalars().all()
         
-        # Create mapping of face_id to face record
-        face_map = {face.face_id: face for face in faces}
+        # Create mapping of embedding_id to face record
+        face_map = {face.embedding_id: face for face in faces}
         
         # Build results
         for face_id, score in matches:
@@ -114,16 +114,16 @@ class SearchEngine:
             thumbnail_path = image.thumbnail_path if image and hasattr(image, 'thumbnail_path') else None
             
             results.append(SearchResult(
-                face_id=face.face_id,
-                image_id=face.image_id,
+                face_id=face.embedding_id,
+                image_id=str(face.image_id),
                 file_path=file_path,
                 similarity=score,
                 quality_score=face.quality_score,
                 thumbnail_path=thumbnail_path,
-                bbox_x=face.bbox_x,
-                bbox_y=face.bbox_y,
-                bbox_w=face.bbox_w,
-                bbox_h=face.bbox_h
+                bbox_x=int(face.bbox_x),
+                bbox_y=int(face.bbox_y),
+                bbox_w=int(face.bbox_width),
+                bbox_h=int(face.bbox_height)
             ))
         
         return results
@@ -182,9 +182,9 @@ class SearchEngine:
             return []
         
         # Fetch face details
-        stmt = select(Face).where(Face.face_id.in_(filtered_ids))
+        stmt = select(Face).where(Face.embedding_id.in_(filtered_ids))
         faces = db_session.execute(stmt).scalars().all()
-        face_map = {face.face_id: face for face in faces}
+        face_map = {face.embedding_id: face for face in faces}
         
         # Build results with combined scores
         results = []
@@ -202,16 +202,16 @@ class SearchEngine:
             thumbnail_path = image.thumbnail_path if image and hasattr(image, 'thumbnail_path') else None
             
             results.append(SearchResult(
-                face_id=face.face_id,
-                image_id=face.image_id,
+                face_id=face.embedding_id,
+                image_id=str(face.image_id),
                 file_path=file_path,
                 similarity=combined_score,
                 quality_score=face.quality_score,
                 thumbnail_path=thumbnail_path,
-                bbox_x=face.bbox_x,
-                bbox_y=face.bbox_y,
-                bbox_w=face.bbox_w,
-                bbox_h=face.bbox_h
+                bbox_x=int(face.bbox_x),
+                bbox_y=int(face.bbox_y),
+                bbox_w=int(face.bbox_width),
+                bbox_h=int(face.bbox_height)
             ))
         
         # Sort by combined similarity (descending)
@@ -256,7 +256,7 @@ class SearchEngine:
         face_ids = [m.face_id for m in mappings]
         
         # Fetch face embeddings
-        stmt = select(Face).where(Face.face_id.in_(face_ids))
+        stmt = select(Face).where(Face.id.in_(face_ids))
         faces = db_session.execute(stmt).scalars().all()
         
         if not faces:

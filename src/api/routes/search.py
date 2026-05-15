@@ -30,7 +30,7 @@ def get_embedder() -> FaceEmbedder:
     """Get or create face embedder instance."""
     global _embedder
     if _embedder is None:
-        _embedder = FaceEmbedder(settings)
+        _embedder = FaceEmbedder(model_name="antelopev2")
     return _embedder
 
 
@@ -38,7 +38,7 @@ def get_detector() -> FaceDetector:
     """Get or create face detector instance."""
     global _detector
     if _detector is None:
-        _detector = FaceDetector(settings)
+        _detector = FaceDetector(model_name="buffalo_l")
     return _detector
 
 
@@ -107,11 +107,11 @@ async def search_faces(
             return {"results": [], "message": "No faces detected in query image"}
         
         # Use the largest/most prominent face for search
-        best_face = max(faces, key=lambda f: f.get("quality_score", 0))
+        best_face = max(faces, key=lambda f: f.quality_score)
         
         # Extract embedding
         embedder = get_embedder()
-        embedding = embedder.embed(img_array, best_face["bbox"])
+        embedding = embedder.embed(img_array, best_face.bbox)
         
         if embedding is None:
             raise HTTPException(status_code=400, detail="Failed to extract face embedding")
@@ -165,8 +165,8 @@ async def search_faces(
         
         return {
             "query_face": {
-                "bbox": best_face["bbox"],
-                "quality_score": round(best_face.get("quality_score", 0), 4),
+                "bbox": best_face.bbox,
+                "quality_score": round(best_face.quality_score, 4),
             },
             "results": filtered_results,
             "total_found": len(filtered_results),
@@ -215,11 +215,11 @@ async def search_multi_face(
         face_quality_scores = []
         
         for face in faces:
-            embedding = embedder.embed(img_array, face["bbox"])
+            embedding = embedder.embed(img_array, face.bbox)
             if embedding is not None:
                 face_embeddings.append(embedding)
-                face_bboxes.append(face["bbox"])
-                face_quality_scores.append(face.get("quality_score", 0))
+                face_bboxes.append(face.bbox)
+                face_quality_scores.append(face.quality_score)
         
         if not face_embeddings:
             raise HTTPException(status_code=400, detail="Failed to extract any face embeddings")
