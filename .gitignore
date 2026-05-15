@@ -50,3 +50,19 @@ Expected Output:
     .idea/
     #Original rules preserved
     *.log
+```
+# Test directories
+tests/comprehensive/__pycache__/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Coverage reports
+.coverage
+htmlcov/
+.coverage.*
+
+# Testing
+.pytest_cache/
+```
