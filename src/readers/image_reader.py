@@ -45,16 +45,14 @@ class ImageReader:
             if path.suffix.lower() in ('.heic', '.heif'):
                 return self._read_heic(path)
 
-            # Standard image formats
-            with Image.open(path) as img:
-                # Convert to RGB if necessary
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
+            # Standard image formats — keep orig_img bound so the file handle
+            # closes on __exit__ even after convert() rebinds img.
+            with Image.open(path) as orig_img:
+                orig_img.load()  # force full read before file closes
+                img = orig_img.convert('RGB') if orig_img.mode != 'RGB' else orig_img.copy()
 
-                # Resize if too large
-                img = self._maybe_resize(img)
-
-                return np.array(img)
+            img = self._maybe_resize(img)
+            return np.array(img)
 
         except Exception as e:
             logger.error(f"Failed to read image {path}: {e}")
@@ -66,11 +64,12 @@ class ImageReader:
             from pillow_heif import register_heif_opener
             register_heif_opener()
 
-            with Image.open(path) as img:
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
-                img = self._maybe_resize(img)
-                return np.array(img)
+            with Image.open(path) as orig_img:
+                orig_img.load()
+                img = orig_img.convert('RGB') if orig_img.mode != 'RGB' else orig_img.copy()
+
+            img = self._maybe_resize(img)
+            return np.array(img)
 
         except ImportError:
             logger.warning("pillow-heif not installed, cannot read HEIC files")

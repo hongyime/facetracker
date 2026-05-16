@@ -90,11 +90,11 @@ class BatchedFAISSIndex:
     def add(self, embedding: np.ndarray, face_id: str) -> int:
         """
         Add an embedding to the staging buffer.
-        
+
         Args:
             embedding: 512-d numpy array (float32)
             face_id: Unique identifier for the face
-            
+
         Returns:
             Position in staging buffer
         """
@@ -104,103 +104,112 @@ class BatchedFAISSIndex:
             embedding = embedding.reshape(1, -1)
         faiss.normalize_L2(embedding)
         embedding = embedding.flatten()
-        
-        self.staging_vectors.append(embedding)
-        self.staging_ids.append(face_id)
-        
-        # Check if merge needed
-        if len(self.staging_vectors) >= self.staging_size:
+
+        with self.merge_lock:
+            self.staging_vectors.append(embedding)
+            self.staging_ids.append(face_id)
+
+            count = len(self.staging_vectors)
+
+        # Check if merge needed (outside lock for better concurrency, 
+        # but _merge_staging_to_live will re-lock)
+        if count >= self.staging_size:
             self._merge_staging_to_live()
-        
-        return len(self.staging_vectors) - 1
-    
+
+        return count - 1
+
     def add_batch(self, embeddings: np.ndarray, face_ids: List[str]) -> int:
         """
         Add multiple embeddings to the staging buffer.
-        
+
         Args:
             embeddings: N x 512 numpy array
             face_ids: List of face IDs
-            
+
         Returns:
             Number of embeddings added
         """
         # Normalize embeddings
         embeddings = embeddings.astype(np.float32)
         faiss.normalize_L2(embeddings)
-        
-        for i, emb in enumerate(embeddings):
-            self.staging_vectors.append(emb)
-            self.staging_ids.append(face_ids[i])
-        
+
+        with self.merge_lock:
+            for i, emb in enumerate(embeddings):
+                self.staging_vectors.append(emb)
+                self.staging_ids.append(face_ids[i])
+
+            count = len(self.staging_vectors)
+
         # Check if merge needed
-        if len(self.staging_vectors) >= self.staging_size:
+        if count >= self.staging_size:
             self._merge_staging_to_live()
-        
+
         return len(embeddings)
-    
+
     def search(self, embedding: np.ndarray, k: int = 100) -> List[Tuple[str, float]]:
         """
         Search the live index for similar embeddings.
-        
+
         Args:
             embedding: Query embedding (512-d)
             k: Number of results to return
-            
+
         Returns:
             List of (face_id, similarity_score) tuples
         """
         if self.live_count == 0:
             return []
-        
+
         # Normalize query
         embedding = embedding.astype(np.float32).reshape(1, -1)
         faiss.normalize_L2(embedding)
-        
-        # Search live index only
-        D, I = self.live_index.search(embedding, k)
-        
-        # Convert to list of (face_id, score) tuples
-        results = []
-        for i, (dist, idx) in enumerate(zip(D[0], I[0])):
-            if idx < len(self.live_ids):
-                results.append((self.live_ids[idx], float(dist)))
-        
+
+        # Search live index (read lock would be better but we'll use merge_lock
+        # to ensure we don't search while merging)
+        with self.merge_lock:
+            D, I = self.live_index.search(embedding, k)
+
+            # Convert to list of (face_id, score) tuples
+            results = []
+            for i, (dist, idx) in enumerate(zip(D[0], I[0])):
+                if idx >= 0 and idx < len(self.live_ids):
+                    results.append((self.live_ids[idx], float(dist)))
+
         return results
-    
+
     def _merge_staging_to_live(self) -> None:
         """
         Merge staging buffer into live index atomically.
-        
+
         This method is thread-safe and blocks searches during merge.
         """
         with self.merge_lock:
             if len(self.staging_vectors) == 0:
                 return
-            
+
             print(f"Merging {len(self.staging_vectors)} vectors from staging to live index...")
-            
+
             # Create combined index
             staging_array = np.array(self.staging_vectors, dtype=np.float32)
-            
+
             # Add staging vectors to live index
             self.live_index.add(staging_array)
             self.live_ids.extend(self.staging_ids)
             self.live_count = self.live_index.ntotal
-            
-            # Save index to disk
-            self._save_index()
-            
-            # Save IDs to disk
-            self._save_ids()
-            
-            # Clear staging buffer
-            self.staging_vectors.clear()
-            self.staging_ids.clear()
-            self.last_merge_time = datetime.utcnow()
-            
-            print(f"Merge complete. Live index now has {self.live_count} vectors.")
-    
+
+            # Save index and IDs to disk
+            try:
+                self._save_index()
+                self._save_ids()
+
+                # Clear staging buffer ONLY if save succeeded
+                self.staging_vectors.clear()
+                self.staging_ids.clear()
+                self.last_merge_time = datetime.utcnow()
+                print(f"Merge complete. Live index now has {self.live_count} vectors.")
+            except Exception as e:
+                print(f"Failed to save merged index: {e}")
+                # We keep the vectors in staging to try again next time
     def _save_index(self) -> None:
         """Save the live index to disk."""
         temp_path = self.live_path.with_suffix(".faiss.tmp")

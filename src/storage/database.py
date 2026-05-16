@@ -1,14 +1,13 @@
 """Database module with SQLAlchemy models for Face Tracker."""
 
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Float, DateTime, 
-    ForeignKey, Boolean, Index, Text, event
+    create_engine, Column, Integer, String, Float, DateTime,
+    ForeignKey, Boolean, Index, Text, event, text
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
-from sqlalchemy.dialects.postgresql import UUID
 from pgvector.sqlalchemy import Vector
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 import numpy as np
 
 Base = declarative_base()
@@ -28,6 +27,9 @@ class Image(Base):
     height = Column(Integer)
     status = Column(String(50), default="pending", index=True)  # pending, processing, completed, failed
     error_message = Column(Text)
+    is_video = Column(Boolean, default=False)
+    video_frames = Column(Integer, default=0)
+    face_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -48,11 +50,17 @@ class Face(Base):
     image_id = Column(Integer, ForeignKey("images.id"), nullable=False)
     embedding_id = Column(String(64), unique=True, nullable=False, index=True)
     
-    # Bounding box (normalized 0-1)
-    bbox_x = Column(Float, nullable=False)
-    bbox_y = Column(Float, nullable=False)
-    bbox_width = Column(Float, nullable=False)
-    bbox_height = Column(Float, nullable=False)
+    # Normalized bounding box (0-1)
+    bbox_x1 = Column(Float, nullable=False)
+    bbox_y1 = Column(Float, nullable=False)
+    bbox_x2 = Column(Float, nullable=False)
+    bbox_y2 = Column(Float, nullable=False)
+    
+    # Pixel coordinates
+    bbox_px_x1 = Column(Integer, nullable=False)
+    bbox_px_y1 = Column(Integer, nullable=False)
+    bbox_px_x2 = Column(Integer, nullable=False)
+    bbox_px_y2 = Column(Integer, nullable=False)
     
     # Quality metrics
     quality_score = Column(Float, nullable=False, index=True)
@@ -61,12 +69,14 @@ class Face(Base):
     detection_confidence = Column(Float)
     
     # Embedding stored as halfvec (16-bit float)
-    # Using Vector with dtype='half' via pgvector
-    embedding_vec = Column(Vector(dim=512))
+    embedding_vec = Column(Vector(512))
+    
+    thumbnail_path = Column(Text)
     
     # Tracking info (for video frames)
     track_id = Column(Integer)
     frame_number = Column(Integer)
+    video_path = Column(Text)
     
     created_at = Column(DateTime, default=datetime.utcnow)
     
@@ -91,7 +101,7 @@ class Identity(Base):
     cluster_id = Column(Integer)  # Original clustering assignment
     
     # Cluster centroid embedding
-    centroid_embedding = Column(Vector(dim=512))
+    centroid_embedding = Column(Vector(512))
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -200,6 +210,7 @@ class Database:
         self.database_url = database_url
         self.engine = None
         self.SessionLocal = None
+        self._session = None
     
     def connect(self) -> None:
         """Create database engine and session factory."""
@@ -216,6 +227,9 @@ class Database:
     def create_tables(self) -> None:
         """Create all tables in the database."""
         if self.engine:
+            with self.engine.connect() as conn:
+                conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                conn.commit()
             Base.metadata.create_all(bind=self.engine)
     
     def get_session(self):
@@ -228,6 +242,37 @@ class Database:
         """Close database connection."""
         if self.engine:
             self.engine.dispose()
+
+    @property
+    def session(self):
+        """Internal session for direct calls."""
+        if self._session is None:
+            self._session = self.get_session()
+        return self._session
+
+    def get_image_by_hash(self, file_hash: str) -> Optional[Image]:
+        """Get image by file hash."""
+        return self.session.query(Image).filter(Image.file_hash == file_hash).first()
+
+    def add_image(self, image: Image) -> None:
+        """Add image to session."""
+        self.session.add(image)
+
+    def add_face(self, face: Face) -> None:
+        """Add face to session."""
+        self.session.add(face)
+
+    def commit(self) -> None:
+        """Commit current transaction."""
+        try:
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            raise
+
+    def rollback(self) -> None:
+        """Rollback current transaction."""
+        self.session.rollback()
 
 
 def get_database(database_url: str) -> Database:

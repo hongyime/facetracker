@@ -75,10 +75,8 @@ class RankingStrategy:
         ranked_results = []
         
         for result in results:
-            # Compute recency factor (requires image timestamp)
-            recency_factor = self._compute_recency_factor(
-                result.image_id, reference_date
-            )
+            # For simplicity, if we don't have a date, assume neutral recency
+            recency_factor = 0.5
             
             # Normalize quality score (assume 0-1 range)
             quality_factor = min(1.0, max(0.0, result.quality_score))
@@ -97,10 +95,10 @@ class RankingStrategy:
                 similarity=result.similarity,
                 quality_score=result.quality_score,
                 thumbnail_path=result.thumbnail_path,
-                bbox_x=result.bbox_x,
-                bbox_y=result.bbox_y,
-                bbox_w=result.bbox_w,
-                bbox_h=result.bbox_h,
+                bbox_x1=result.bbox_x1,
+                bbox_y1=result.bbox_y1,
+                bbox_x2=result.bbox_x2,
+                bbox_y2=result.bbox_y2,
                 ranking_score=ranking_score,
                 recency_factor=recency_factor,
                 quality_factor=quality_factor
@@ -110,60 +108,6 @@ class RankingStrategy:
         ranked_results.sort(key=lambda r: r.ranking_score, reverse=True)
         
         return ranked_results
-    
-    def _compute_recency_factor(
-        self,
-        image_id: str,
-        reference_date: datetime
-    ) -> float:
-        """
-        Compute recency factor based on image ID timestamp.
-        
-        Image IDs contain timestamps. We extract and compute decay.
-        
-        Args:
-            image_id: Image identifier (contains timestamp)
-            reference_date: Reference date
-            
-        Returns:
-            Recency factor (0-1), where 1 is most recent
-        """
-        # Try to extract timestamp from image_id
-        # Format: img_YYYYMMDD_HHMMSS_xxx
-        try:
-            parts = image_id.split('_')
-            if len(parts) >= 3:
-                date_str = parts[1]
-                time_str = parts[2]
-                
-                # Parse date
-                year = int(date_str[:4])
-                month = int(date_str[4:6])
-                day = int(date_str[6:8])
-                
-                hour = int(time_str[:2]) if len(time_str) >= 2 else 0
-                minute = int(time_str[2:4]) if len(time_str) >= 4 else 0
-                second = int(time_str[4:6]) if len(time_str) >= 6 else 0
-                
-                image_date = datetime(year, month, day, hour, minute, second)
-                
-                # Compute days difference
-                days_diff = (reference_date - image_date).days
-                
-                if days_diff < 0:
-                    return 1.0  # Future date, treat as most recent
-                
-                # Exponential decay: factor = 0.5^(days / half_life)
-                half_life = self.recency_decay_days
-                recency_factor = 0.5 ** (days_diff / half_life)
-                
-                return recency_factor
-                
-        except (ValueError, IndexError):
-            pass
-        
-        # Default: neutral recency
-        return 0.5
     
     def rank_by_similarity_only(
         self,
@@ -188,10 +132,10 @@ class RankingStrategy:
                 similarity=result.similarity,
                 quality_score=result.quality_score,
                 thumbnail_path=result.thumbnail_path,
-                bbox_x=result.bbox_x,
-                bbox_y=result.bbox_y,
-                bbox_w=result.bbox_w,
-                bbox_h=result.bbox_h,
+                bbox_x1=result.bbox_x1,
+                bbox_y1=result.bbox_y1,
+                bbox_x2=result.bbox_x2,
+                bbox_y2=result.bbox_y2,
                 ranking_score=result.similarity,
                 recency_factor=1.0,
                 quality_factor=min(1.0, max(0.0, result.quality_score))

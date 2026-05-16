@@ -120,6 +120,9 @@ class FaceTracker:
 
             # Convert to TrackedFace objects
             tracked_faces = []
+            current_frame = self.frame_count if frame_number is None else frame_number
+            current_time = self.frame_count * 0.333 if timestamp is None else timestamp # Default ~3 FPS per PRD
+
             for track in tracks:
                 if not track.is_confirmed():
                     continue
@@ -134,15 +137,18 @@ class FaceTracker:
                     track_id=track_id,
                     bbox=bbox,
                     confidence=track.get_confidence(),
-                    frame_number=self.frame_count if frame_number is None else frame_number,
-                    timestamp=self.frame_count * 0.033 if timestamp is None else timestamp  # ~30 FPS
+                    frame_number=current_frame,
+                    timestamp=current_time
                 )
                 tracked_faces.append(tracked_face)
 
-                # Track history
+                # Track history (limit to last 100 frames per track to avoid memory leak)
                 if track_id not in self.active_tracks:
                     self.active_tracks[track_id] = []
                 self.active_tracks[track_id].append(tracked_face)
+                
+                if len(self.active_tracks[track_id]) > 100:
+                    self.active_tracks[track_id].pop(0)
 
             self.frame_count += 1
 
@@ -167,7 +173,7 @@ class FaceTracker:
 
         Args:
             track_id: Track ID to find best frame for.
-            quality_scores: Optional quality scores for each frame.
+            quality_scores: Optional quality scores for EACH frame in history.
 
         Returns:
             TrackedFace with best quality, or most recent if no scores.
@@ -177,9 +183,11 @@ class FaceTracker:
         if not history:
             return None
 
-        if quality_scores and len(quality_scores) == len(history):
-            # Select frame with highest quality
-            best_idx = np.argmax(quality_scores)
+        if quality_scores is not None and len(quality_scores) > 0:
+            # Match scores to history (assuming they are for the same frames)
+            # Use min length to avoid IndexError
+            n = min(len(quality_scores), len(history))
+            best_idx = int(np.argmax(quality_scores[:n]))
             return history[best_idx]
         else:
             # Return most recent frame

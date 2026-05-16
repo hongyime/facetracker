@@ -20,10 +20,10 @@ class SearchResult:
     similarity: float
     quality_score: float
     thumbnail_path: Optional[str] = None
-    bbox_x: int = 0
-    bbox_y: int = 0
-    bbox_w: int = 0
-    bbox_h: int = 0
+    bbox_x1: float = 0.0
+    bbox_y1: float = 0.0
+    bbox_x2: float = 0.0
+    bbox_y2: float = 0.0
 
 
 @dataclass
@@ -111,7 +111,6 @@ class SearchEngine:
             # Get image info
             image = face.image if face.image else None
             file_path = image.file_path if image else "unknown"
-            thumbnail_path = image.thumbnail_path if image and hasattr(image, 'thumbnail_path') else None
             
             results.append(SearchResult(
                 face_id=face.embedding_id,
@@ -119,11 +118,11 @@ class SearchEngine:
                 file_path=file_path,
                 similarity=score,
                 quality_score=face.quality_score,
-                thumbnail_path=thumbnail_path,
-                bbox_x=int(face.bbox_x),
-                bbox_y=int(face.bbox_y),
-                bbox_w=int(face.bbox_width),
-                bbox_h=int(face.bbox_height)
+                thumbnail_path=face.thumbnail_path,
+                bbox_x1=face.bbox_x1,
+                bbox_y1=face.bbox_y1,
+                bbox_x2=face.bbox_x2,
+                bbox_y2=face.bbox_y2
             ))
         
         return results
@@ -156,7 +155,7 @@ class SearchEngine:
             threshold = self.default_threshold
         
         # Search for each embedding
-        all_results: Dict[str, Dict[str, float]] = {}  # face_id -> {query_idx: score}
+        all_results: Dict[str, Dict[int, float]] = {}  # face_id -> {query_idx: score}
         
         for idx, emb in enumerate(embeddings):
             matches = self.faiss_index.search(emb, k=k * len(embeddings))
@@ -199,7 +198,6 @@ class SearchEngine:
             
             image = face.image if face.image else None
             file_path = image.file_path if image else "unknown"
-            thumbnail_path = image.thumbnail_path if image and hasattr(image, 'thumbnail_path') else None
             
             results.append(SearchResult(
                 face_id=face.embedding_id,
@@ -207,11 +205,11 @@ class SearchEngine:
                 file_path=file_path,
                 similarity=combined_score,
                 quality_score=face.quality_score,
-                thumbnail_path=thumbnail_path,
-                bbox_x=int(face.bbox_x),
-                bbox_y=int(face.bbox_y),
-                bbox_w=int(face.bbox_width),
-                bbox_h=int(face.bbox_height)
+                thumbnail_path=face.thumbnail_path,
+                bbox_x1=face.bbox_x1,
+                bbox_y1=face.bbox_y1,
+                bbox_x2=face.bbox_x2,
+                bbox_y2=face.bbox_y2
             ))
         
         # Sort by combined similarity (descending)
@@ -263,9 +261,21 @@ class SearchEngine:
             return []
         
         # Compute average embedding
-        embeddings = np.array([face.embedding for face in faces])
+        # Ensure we convert from halfvec (float16) if stored as such
+        embeddings = []
+        for face in faces:
+            if face.embedding_vec is not None:
+                emb = np.array(face.embedding_vec, dtype=np.float32)
+                embeddings.append(emb)
+        
+        if not embeddings:
+            return []
+            
         avg_embedding = np.mean(embeddings, axis=0)
-        avg_embedding = avg_embedding / np.linalg.norm(avg_embedding)
+        # Normalize
+        norm = np.linalg.norm(avg_embedding)
+        if norm > 0:
+            avg_embedding = avg_embedding / norm
         
         # Search using average embedding
         return self.search(avg_embedding, k=k, threshold=threshold, db_session=db_session)

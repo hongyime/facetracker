@@ -137,7 +137,7 @@ class QualityAwareClusterer:
         Apply quality-based weighting to embeddings.
 
         Low-quality faces get perturbed slightly to make them more likely
-        to be classified as outliers.
+        to be classified as outliers. Uses a fixed seed for reproducibility.
 
         Args:
             embeddings: Face embeddings.
@@ -152,7 +152,10 @@ class QualityAwareClusterer:
         # Create noise inversely proportional to quality
         # Low quality = more noise = more likely to be outlier
         noise_scale = 0.1 * (1 - quality_normalized)
-        noise = np.random.normal(0, noise_scale[:, np.newaxis], embeddings.shape)
+        
+        # Use a fixed seed for deterministic weighting
+        rng = np.random.default_rng(seed=42)
+        noise = rng.normal(0, noise_scale[:, np.newaxis], embeddings.shape)
 
         # Add noise to embeddings
         weighted_embeddings = embeddings + noise

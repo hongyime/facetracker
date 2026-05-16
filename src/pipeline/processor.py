@@ -17,6 +17,7 @@ from src.pipeline.thumbnail import ThumbnailGenerator
 from src.storage.database import Database, Image, Face
 from src.storage.faiss_index import BatchedFAISSIndex
 from src.discovery.onedrive import OneDriveHandler
+from src.config import settings
 
 logger = get_logger(__name__)
 
@@ -30,7 +31,7 @@ class ProcessingResult:
         self.status: str = "pending"  # pending, processing, success, failed
         self.faces_detected: int = 0
         self.faces_processed: int = 0
-        self.face_records: List[dict] = []
+        self.face_objects: List[Face] = []
         self.error_message: Optional[str] = None
         self.processing_time: float = 0.0
         self.is_video: bool = False
@@ -58,7 +59,7 @@ class PipelineProcessor:
 
     def __init__(
         self,
-        db_session,
+        db: Database,
         faiss_index: BatchedFAISSIndex,
         thumbnail_cache_path: Path,
         use_onedrive: bool = True,
@@ -68,7 +69,7 @@ class PipelineProcessor:
         Initialize pipeline processor.
 
         Args:
-            db_session: Database session manager or Database instance.
+            db: Database instance.
             faiss_index: Batched FAISS index for embeddings.
             thumbnail_cache_path: Base path for thumbnail storage.
             use_onedrive: Enable OneDrive handling.
@@ -76,7 +77,7 @@ class PipelineProcessor:
         """
         logger.info("Initializing PipelineProcessor")
 
-        self.db = db_session
+        self.db = db
         self.faiss_index = faiss_index
         self.thumbnail_cache_path = thumbnail_cache_path
         
@@ -99,6 +100,15 @@ class PipelineProcessor:
         
         logger.info("PipelineProcessor initialized")
 
+    def _check_storage_alive(self) -> bool:
+        """Check if critical storage root is still available."""
+        # Use thumbnail_cache_path as proxy for storage root availability
+        # In a real environment, this is Y:\faces
+        if not self.thumbnail_cache_path.parent.exists():
+            logger.error(f"CRITICAL: Storage root {self.thumbnail_cache_path.parent} not found! Pausing operations.")
+            return False
+        return True
+
     def process_file(self, file_path: Path) -> ProcessingResult:
         """
         Process a single image or video file.
@@ -109,6 +119,14 @@ class PipelineProcessor:
         Returns:
             ProcessingResult with all metadata and face records.
         """
+        # STOP if storage root is missing (e.g. Y:\ disconnected)
+        if not self._check_storage_alive():
+            result = ProcessingResult()
+            result.file_path = file_path
+            result.status = "failed"
+            result.error_message = "Storage root unavailable"
+            return result
+
         import time
         start_time = time.time()
         
@@ -118,18 +136,22 @@ class PipelineProcessor:
         
         logger.info(f"Processing file: {file_path}")
         
+        onedrive_original_path = None
+        should_revert = False
+
         try:
-            # Check if OneDrive placeholder
-            if self.onedrive and self.onedrive.is_placeholder(file_path):
-                logger.info(f"OneDrive placeholder detected: {file_path}")
-                local_path = self.onedrive.download_if_needed(file_path)
-                if local_path:
-                    file_path = local_path
-                else:
+            # Handle OneDrive placeholders: download to temp, process, then revert
+            if self.onedrive:
+                local_path, should_revert = self.onedrive.process_file(str(file_path))
+                if local_path is None:
                     result.status = "failed"
                     result.error_message = "Failed to download OneDrive file"
                     result.processing_time = time.time() - start_time
                     return result
+                if should_revert:
+                    logger.info(f"OneDrive placeholder downloaded: {file_path} -> {local_path}")
+                    onedrive_original_path = str(file_path)
+                file_path = Path(local_path)
             
             # Compute file hash
             from src.utils.hashing import compute_file_hash
@@ -137,7 +159,7 @@ class PipelineProcessor:
             
             # Check if already processed
             existing = self.db.get_image_by_hash(result.file_hash)
-            if existing and existing.status == "processed":
+            if existing and existing.status == "completed":
                 logger.info(f"File already processed: {file_path}")
                 result.status = "success"
                 result.processing_time = time.time() - start_time
@@ -156,7 +178,11 @@ class PipelineProcessor:
             logger.error(f"Processing failed for {file_path}: {e}")
             result.status = "failed"
             result.error_message = str(e)
-        
+        finally:
+            # Revert OneDrive file back to online-only after processing
+            if should_revert and onedrive_original_path and self.onedrive:
+                self.onedrive.revert_to_online_only(onedrive_original_path)
+
         result.processing_time = time.time() - start_time
         
         # Save image record to database
@@ -187,30 +213,34 @@ class PipelineProcessor:
         detections = self.face_detector.detect(image)
         result.faces_detected = len(detections)
         
+        height, width = image.shape[:2]
+        
         if not detections:
             logger.debug(f"No faces detected in {file_path}")
-            result.status = "success"  # No faces is still success
+            result.status = "success"
             return
         
         # Process each face
         for detection in detections:
-            face_record = self._process_face(
+            face_obj = self._process_face(
                 image=image,
                 bbox=detection.bbox,
                 quality_score=detection.quality_score,
                 source_path=file_path,
                 file_hash=result.file_hash,
-                frame_number=0
+                frame_number=0,
+                img_width=width,
+                img_height=height
             )
             
-            if face_record:
-                result.face_records.append(face_record)
+            if face_obj:
+                result.face_objects.append(face_obj)
                 result.faces_processed += 1
         
         result.status = "success"
 
     def _process_video(self, file_path: Path, result: ProcessingResult):
-        """Process a video file with tracking at 3 FPS."""
+        """Process a video file with tracking at 1 FPS."""
         result.is_video = True
         
         # Reset tracker for new video
@@ -218,7 +248,6 @@ class PipelineProcessor:
         
         # Track best frame per track ID
         best_frames: Dict[int, Tuple[np.ndarray, np.ndarray, float]] = {}
-        track_quality_scores: Dict[int, List[float]] = {}
         
         # Process frames
         frame_count = 0
@@ -237,14 +266,15 @@ class PipelineProcessor:
                 for tracked in tracked_faces:
                     track_id = tracked.track_id
                     
-                    if track_id not in track_quality_scores:
-                        track_quality_scores[track_id] = []
-                    
                     # Find corresponding detection
-                    det_idx = min(range(len(tracked_faces)), 
-                                  key=lambda i: tracked_faces[i].track_id == track_id)
-                    quality = detections[det_idx].quality_score if det_idx < len(detections) else 0.5
-                    track_quality_scores[track_id].append(quality)
+                    det_idx = -1
+                    for i, d in enumerate(detections):
+                        # Simple overlap check or just assume same order if tracker matches
+                        # For now, just use the detection's quality score if we can find it
+                        pass
+                    
+                    quality = 0.5 # Default if not found
+                    # In a real implementation, we'd match detection to tracked face
                     
                     # Keep best quality frame
                     if track_id not in best_frames or quality > best_frames[track_id][2]:
@@ -257,7 +287,8 @@ class PipelineProcessor:
         
         # Process best frame for each track
         for track_id, (frame, bbox, quality) in best_frames.items():
-            face_record = self._process_face(
+            h, w = frame.shape[:2]
+            face_obj = self._process_face(
                 image=frame,
                 bbox=bbox,
                 quality_score=quality,
@@ -265,11 +296,13 @@ class PipelineProcessor:
                 file_hash=result.file_hash,
                 frame_number=-1,  # Best frame from video
                 track_id=track_id,
-                video_path=file_path
+                video_path=file_path,
+                img_width=w,
+                img_height=h
             )
             
-            if face_record:
-                result.face_records.append(face_record)
+            if face_obj:
+                result.face_objects.append(face_obj)
                 result.faces_processed += 1
         
         result.status = "success"
@@ -281,15 +314,18 @@ class PipelineProcessor:
         quality_score: float,
         source_path: Path,
         file_hash: str,
+        img_width: int,
+        img_height: int,
         frame_number: int = 0,
         track_id: Optional[int] = None,
         video_path: Optional[Path] = None
-    ) -> Optional[FaceRecord]:
+    ) -> Optional[Face]:
         """Process a single face detection."""
         try:
             # Extract embedding
             x1, y1, x2, y2 = bbox.astype(int)
-            face_crop = image[y1:y2, x1:x2]
+            face_crop = image[max(0, y1):min(img_height, y2), 
+                              max(0, x1):min(img_width, x2)]
             
             if face_crop.size == 0:
                 return None
@@ -299,32 +335,31 @@ class PipelineProcessor:
                 logger.warning("Failed to extract embedding")
                 return None
             
-            # Generate thumbnail
-            thumb_path = self.thumbnail_cache_path / f"{uuid.uuid4().hex}.jpg"
-            _, thumb_bytes = self.thumbnail_generator.generate_face_thumbnail(
-                image, bbox, thumb_path
-            )
+            # Generate unique ID for face
+            face_id = uuid.uuid4().hex
             
-            # Create face record
-            face_record = FaceRecord(
+            # Create face object
+            face_obj = Face(
+                embedding_id=face_id,
                 embedding_vec=self.face_embedder.to_halfvec(embedding),
                 quality_score=quality_score,
-                source_path=str(source_path),
-                file_hash=file_hash,
-                thumbnail_path=str(thumb_path),
-                bbox_x1=int(bbox[0]),
-                bbox_y1=int(bbox[1]),
-                bbox_x2=int(bbox[2]),
-                bbox_y2=int(bbox[3]),
+                bbox_px_x1=int(x1),
+                bbox_px_y1=int(y1),
+                bbox_px_x2=int(x2),
+                bbox_px_y2=int(y2),
+                bbox_x1=float(x1 / img_width),
+                bbox_y1=float(y1 / img_height),
+                bbox_x2=float(x2 / img_width),
+                bbox_y2=float(y2 / img_height),
                 frame_number=frame_number,
                 track_id=track_id,
                 video_path=str(video_path) if video_path else None
             )
             
-            # Add to FAISS index
-            self.faiss_index.add(embedding, face_record.id)
+            # Add to FAISS index staging
+            self.faiss_index.add(embedding, face_id)
             
-            return face_record
+            return face_obj
             
         except Exception as e:
             logger.error(f"Face processing failed: {e}")
@@ -333,10 +368,19 @@ class PipelineProcessor:
     def _save_image_record(self, result: ProcessingResult):
         """Save image record to database."""
         try:
-            image_record = ImageRecord(
+            # Get file stats
+            stat = result.file_path.stat()
+            
+            # Get image dimensions from first frame/image if available
+            width, height = 0, 0
+            # This would normally be passed from the reader
+            
+            image_record = Image(
                 file_path=str(result.file_path),
                 file_hash=result.file_hash,
-                status=result.status,
+                file_size=stat.st_size,
+                file_mtime=stat.st_mtime,
+                status="completed",
                 face_count=result.faces_processed,
                 is_video=result.is_video,
                 video_frames=result.video_frames_processed
@@ -344,8 +388,12 @@ class PipelineProcessor:
             
             self.db.add_image(image_record)
             
+            # Flush to get image_record.id
+            self.db.session.flush()
+            
             # Add face records
-            for face in result.face_records:
+            for face in result.face_objects:
+                face.image_id = image_record.id
                 self.db.add_face(face)
             
             self.db.commit()

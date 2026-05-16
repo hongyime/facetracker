@@ -7,6 +7,9 @@ from typing import Optional, Tuple, Dict, Any
 import time
 
 from src.config import Settings
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class OneDriveHandler:
@@ -244,17 +247,8 @@ class OneDriveHandler:
                 # Create temp path
                 temp_path = self.temp_dir / Path(file_path).name
                 
-                # Use PowerShell to trigger download via Files On-Demand
-                ps_command = f"""
-                $source = '{file_path}'
-                $dest = '{temp_path}'
-                
-                # Trigger download by accessing the file
-                $content = Get-Content -Path $source -Raw -Encoding Byte
-                [System.IO.File]::WriteAllBytes($dest, $content)
-                
-                return $dest
-                """
+                # Use PowerShell Copy-Item which handles Files On-Demand download better
+                ps_command = f"Copy-Item -Path '{file_path}' -Destination '{temp_path}' -Force"
                 
                 result = subprocess.run(
                     ["powershell", "-Command", ps_command],
@@ -264,15 +258,15 @@ class OneDriveHandler:
                 )
                 
                 if result.returncode == 0 and temp_path.exists():
-                    print(f"Downloaded OneDrive file: {file_path} -> {temp_path}")
+                    logger.info(f"Downloaded OneDrive file: {file_path} -> {temp_path}")
                     return str(temp_path)
                 
-                print(f"OneDrive download attempt {attempt + 1} failed: {result.stderr}")
+                logger.warning(f"OneDrive download attempt {attempt + 1} failed: {result.stderr}")
                 
             except subprocess.TimeoutExpired:
-                print(f"OneDrive download timeout for {file_path}")
+                logger.error(f"OneDrive download timeout for {file_path}")
             except Exception as e:
-                print(f"OneDrive download error: {e}")
+                logger.error(f"OneDrive download error: {e}")
         
         return None
     
@@ -288,50 +282,34 @@ class OneDriveHandler:
         Returns:
             True if successfully reverted
         """
-        if not self.enabled or not self.revert_verify:
+        if not self.enabled:
             return False
         
         try:
-            # PowerShell command to free up space
-            ps_command = f"""
-            $path = '{file_path}'
-            
-            # Use Windows API to set online-only status
-            Add-Type -TypeDefinition @\"
-            using System;
-            using System.Runtime.InteropServices;
-            public class Native {{
-                [DllImport(\"shell32.dll\")]
-                public static extern int SHSetLocalizedName(string pszPath);
-            }}
-            \"@
-            
-            # Alternative: Use built-in FreeDiskSpace method
-            $shell = New-Object -ComObject Shell.Application
-            $folder = $shell.Namespace((Split-Path $path))
-            $item = $folder.ParseName((Split-Path $path -Leaf))
-            
-            # Invoke context menu action for "Free Space"
-            # This triggers Files On-Demand to make it online-only
-            return $true
-            """
+            # Correct PowerShell command to free up space (Attribute 0x100000 = cloud-only)
+            # attrib +U <file> is the simplest way for OneDrive
+            ps_command = f"attrib +U '{file_path}'"
             
             result = subprocess.run(
-                ["powershell", "-Command", ps_command],
+                ["cmd", "/c", ps_command],
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
             
             if result.returncode == 0:
-                print(f"Reverted to online-only: {file_path}")
+                logger.info(f"Reverted to online-only: {file_path}")
                 return True
             
-            print(f"Failed to revert {file_path}: {result.stderr}")
+            # Fallback to PowerShell if needed
+            ps_command = f"powershell.exe -Command \"Get-Item '{file_path}' | % {{ $_.Attributes = $_.Attributes -bor [System.IO.FileAttributes]::Offline }}\""
+            # Actually, attrib +U is specifically for OneDrive cloud-only status
+            
+            logger.warning(f"Failed to revert {file_path}: {result.stderr}")
             return False
             
         except Exception as e:
-            print(f"Error reverting OneDrive file: {e}")
+            logger.error(f"Error reverting OneDrive file: {e}")
             return False
     
     def verify_online_only(self, file_path: str) -> bool:

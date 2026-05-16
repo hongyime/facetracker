@@ -153,7 +153,7 @@ class DriveScanner:
     
     def _scandir_recursive(self, path: str) -> Generator[tuple, None, None]:
         """
-        Recursively scan directories using os.scandir().
+        Recursively scan directories using os.scandir() generator.
         
         Args:
             path: Directory path to scan
@@ -161,24 +161,23 @@ class DriveScanner:
         Yields:
             Tuples of (root, dirs, files) like os.walk()
         """
-        try:
-            entries = list(os.scandir(path))
-        except (PermissionError, OSError):
-            return
-        
         dirs = []
         files = []
         
-        for entry in entries:
-            try:
-                if entry.is_dir(follow_symlinks=False):
-                    # Skip excluded directories
-                    if str(entry.path) not in self.exclude_paths:
-                        dirs.append(entry.name)
-                elif entry.is_file(follow_symlinks=False):
-                    files.append(entry.name)
-            except (PermissionError, OSError):
-                continue
+        try:
+            with os.scandir(path) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            # Skip excluded directories early
+                            if not self._is_excluded(Path(entry.path)):
+                                dirs.append(entry.name)
+                        elif entry.is_file(follow_symlinks=False):
+                            files.append(entry.name)
+                    except (PermissionError, OSError):
+                        continue
+        except (PermissionError, OSError):
+            return
         
         if files:
             yield (path, dirs, files)
