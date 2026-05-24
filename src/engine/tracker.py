@@ -70,6 +70,10 @@ class FaceTracker:
             f"Initializing FaceTracker: max_age={max_age}, n_init={n_init}"
         )
 
+        self.max_age = max_age
+        self.n_init = n_init
+        self.nn_budget = nn_budget
+        
         self.tracker = DeepSort(
             max_age=max_age,
             n_init=n_init,
@@ -77,9 +81,8 @@ class FaceTracker:
             max_cosine_distance=0.2,
             nn_budget=nn_budget,
             override_track_class=None,
-            embedder="mobilenet",
-            half=True,
-            bba='corner'
+            embedder=None,
+            half=True
         )
 
         self.frame_count = 0
@@ -196,15 +199,14 @@ class FaceTracker:
     def reset(self):
         """Reset tracker state for new video."""
         self.tracker = DeepSort(
-            max_age=self.tracker.max_age,
-            n_init=self.tracker.n_init,
+            max_age=self.max_age,
+            n_init=self.n_init,
             nms_max_overlap=1.0,
-            max_cosine_distance=self.tracker.max_cosine_distance,
-            nn_budget=self.tracker.nn_budget,
+            max_cosine_distance=0.2,
+            nn_budget=self.nn_budget,
             override_track_class=None,
-            embedder="mobilenet",
-            half=True,
-            bba='corner'
+            embedder=None,
+            half=True
         )
         self.frame_count = 0
         self.active_tracks.clear()

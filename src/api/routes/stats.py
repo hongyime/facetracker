@@ -1,6 +1,6 @@
 """Stats API routes for dashboard and monitoring."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from typing import Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -41,8 +41,13 @@ async def get_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
     }
 
 @router.get("/scan-progress")
-async def get_scan_progress() -> Dict[str, Any]:
+async def get_scan_progress(request: Request) -> Dict[str, Any]:
     """Get current scan progress."""
+    indexing_manager = getattr(request.app.state, "indexing_manager", None)
+    
+    if indexing_manager:
+        return indexing_manager.get_progress()
+        
     return {
         "is_scanning": False,
         "current_file": None,

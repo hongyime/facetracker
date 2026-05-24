@@ -1,6 +1,5 @@
-"""File manifest manager for incremental updates."""
-
 import json
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
@@ -31,15 +30,17 @@ class FileManifestManager:
         self.manifest_path = Path(config.face_storage_root) / "state" / "file_manifest.json"
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # In-memory manifest cache
+        # In-memory manifest cache and lock
         self._manifest: Optional[Dict[str, Any]] = None
+        self._lock = threading.RLock()
     
     @property
     def manifest(self) -> Dict[str, Any]:
         """Load manifest from disk if not cached."""
-        if self._manifest is None:
-            self._manifest = self._load_manifest()
-        return self._manifest
+        with self._lock:
+            if self._manifest is None:
+                self._manifest = self._load_manifest()
+            return self._manifest
     
     def _load_manifest(self) -> Dict[str, Any]:
         """
@@ -63,9 +64,13 @@ class FileManifestManager:
     
     def save_manifest(self) -> None:
         """Save manifest to disk atomically."""
-        self.manifest["last_updated"] = datetime.utcnow().isoformat()
-        atomic_write_json(self.manifest_path, self.manifest)
-        self._manifest = None  # Invalidate cache
+        with self._lock:
+            self.manifest["last_updated"] = datetime.utcnow().isoformat()
+            # We must NOT set self._manifest = None here if we are about to save it, 
+            # because atomic_write_json needs the data.
+            # Also setting it to None will cause the next access to reload from disk,
+            # which is slow and unnecessary if we have the lock.
+            atomic_write_json(self.manifest_path, self.manifest)
     
     def add_file(
         self,
@@ -85,14 +90,15 @@ class FileManifestManager:
             file_mtime: File modification time
             is_processed: Whether file has been processed
         """
-        self.manifest["files"][file_path] = {
-            "path": file_path,
-            "hash": file_hash,
-            "size": file_size,
-            "mtime": file_mtime,
-            "is_processed": is_processed,
-            "added_at": datetime.utcnow().isoformat(),
-        }
+        with self._lock:
+            self.manifest["files"][file_path] = {
+                "path": file_path,
+                "hash": file_hash,
+                "size": file_size,
+                "mtime": file_mtime,
+                "is_processed": is_processed,
+                "added_at": datetime.utcnow().isoformat(),
+            }
     
     def get_file(self, file_path: str) -> Optional[Dict[str, Any]]:
         """
@@ -104,7 +110,8 @@ class FileManifestManager:
         Returns:
             File record or None if not found
         """
-        return self.manifest["files"].get(file_path)
+        with self._lock:
+            return self.manifest["files"].get(file_path)
     
     def needs_processing(self, file_path: str, current_mtime: float, current_size: int) -> bool:
         """
@@ -123,19 +130,20 @@ class FileManifestManager:
         Returns:
             True if file needs processing
         """
-        record = self.get_file(file_path)
-        
-        if record is None:
-            return True
-        
-        if record.get("is_processed", False):
-            # Check if file has changed
-            if abs(record.get("mtime", 0) - current_mtime) > 1:
+        with self._lock:
+            record = self.get_file(file_path)
+            
+            if record is None:
                 return True
-            if record.get("size", 0) != current_size:
-                return True
-        
-        return False
+            
+            if record.get("is_processed", False):
+                # Check if file has changed
+                if abs(record.get("mtime", 0) - current_mtime) > 1:
+                    return True
+                if record.get("size", 0) != current_size:
+                    return True
+            
+            return False
     
     def mark_processed(self, file_path: str) -> None:
         """
@@ -144,9 +152,10 @@ class FileManifestManager:
         Args:
             file_path: File path to mark
         """
-        if file_path in self.manifest["files"]:
-            self.manifest["files"][file_path]["is_processed"] = True
-            self.manifest["files"][file_path]["processed_at"] = datetime.utcnow().isoformat()
+        with self._lock:
+            if file_path in self.manifest["files"]:
+                self.manifest["files"][file_path]["is_processed"] = True
+                self.manifest["files"][file_path]["processed_at"] = datetime.utcnow().isoformat()
     
     def mark_deleted(self, file_path: str) -> None:
         """
@@ -155,11 +164,12 @@ class FileManifestManager:
         Args:
             file_path: File path to mark as deleted
         """
-        if file_path in self.manifest["files"]:
-            # Move to deleted list
-            record = self.manifest["files"].pop(file_path)
-            record["deleted_at"] = datetime.utcnow().isoformat()
-            self.manifest["deleted"].append(record)
+        with self._lock:
+            if file_path in self.manifest["files"]:
+                # Move to deleted list
+                record = self.manifest["files"].pop(file_path)
+                record["deleted_at"] = datetime.utcnow().isoformat()
+                self.manifest["deleted"].append(record)
     
     def get_unprocessed_files(self) -> List[Dict[str, Any]]:
         """
@@ -168,10 +178,11 @@ class FileManifestManager:
         Returns:
             List of unprocessed file records
         """
-        return [
-            record for record in self.manifest["files"].values()
-            if not record.get("is_processed", False)
-        ]
+        with self._lock:
+            return [
+                record for record in self.manifest["files"].values()
+                if not record.get("is_processed", False)
+            ]
     
     def get_processed_count(self) -> int:
         """
@@ -180,10 +191,11 @@ class FileManifestManager:
         Returns:
             Number of processed files
         """
-        return sum(
-            1 for record in self.manifest["files"].values()
-            if record.get("is_processed", False)
-        )
+        with self._lock:
+            return sum(
+                1 for record in self.manifest["files"].values()
+                if record.get("is_processed", False)
+            )
     
     def get_total_count(self) -> int:
         """
@@ -192,7 +204,8 @@ class FileManifestManager:
         Returns:
             Total number of files
         """
-        return len(self.manifest["files"])
+        with self._lock:
+            return len(self.manifest["files"])
     
     def get_deleted_count(self) -> int:
         """
@@ -201,7 +214,8 @@ class FileManifestManager:
         Returns:
             Number of deleted files
         """
-        return len(self.manifest["deleted"])
+        with self._lock:
+            return len(self.manifest["deleted"])
     
     def cleanup_deleted(self, max_age_days: int = 30) -> None:
         """
@@ -210,12 +224,13 @@ class FileManifestManager:
         Args:
             max_age_days: Maximum age of deleted records to keep
         """
-        cutoff = datetime.utcnow().timestamp() - (max_age_days * 24 * 60 * 60)
-        
-        self.manifest["deleted"] = [
-            record for record in self.manifest["deleted"]
-            if datetime.fromisoformat(record.get("deleted_at", "1970-01-01")).timestamp() > cutoff
-        ]
+        with self._lock:
+            cutoff = datetime.utcnow().timestamp() - (max_age_days * 24 * 60 * 60)
+            
+            self.manifest["deleted"] = [
+                record for record in self.manifest["deleted"]
+                if datetime.fromisoformat(record.get("deleted_at", "1970-01-01")).timestamp() > cutoff
+            ]
     
     def export_summary(self) -> Dict[str, Any]:
         """
@@ -224,10 +239,11 @@ class FileManifestManager:
         Returns:
             Summary dictionary
         """
-        return {
-            "total_files": self.get_total_count(),
-            "processed_files": self.get_processed_count(),
-            "unprocessed_files": self.get_total_count() - self.get_processed_count(),
-            "deleted_files": self.get_deleted_count(),
-            "last_updated": self.manifest.get("last_updated"),
-        }
+        with self._lock:
+            return {
+                "total_files": self.get_total_count(),
+                "processed_files": self.get_processed_count(),
+                "unprocessed_files": self.get_total_count() - self.get_processed_count(),
+                "deleted_files": self.get_deleted_count(),
+                "last_updated": self.manifest.get("last_updated"),
+            }

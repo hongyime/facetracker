@@ -29,7 +29,7 @@ class FaceEmbedder:
         self.app = FaceAnalysis(
             name=model_name,
             providers=providers,
-            allowed_modules=['detection', 'recognition']
+            allowed_modules=['recognition']
         )
         self.app.prepare(ctx_id=0, det_size=(640, 640))
 

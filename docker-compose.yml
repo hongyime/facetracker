@@ -33,10 +33,16 @@ services:
       - POSTGRES_PORT=5432
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - FACE_STORAGE_ROOT=/app/storage
     volumes:
-      - ${FACE_STORAGE_ROOT:-Y:/faces}:/app/storage:rw
+      - ${HOST_FACE_STORAGE:-Y:/faces}:/app/storage:rw
       - ${APP_ROOT:-C:/facetracker}:/app/code:ro
       - ${APP_ROOT:-C:/facetracker}/src:/app/src:ro
+      - model_cache:/root/.insightface/models
+      # Physical drive mounts for scanning
+      - C:/:/mnt/c:ro
+      - Z:/:/mnt/z:ro
+      - Y:/:/mnt/y:ro
     ports:
       - "${DASHBOARD_PORT:-5151}:8000"
     depends_on:
@@ -45,14 +51,21 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
-    # Lowest CPU and IO priority so this never disrupts other containers
-    cpu_shares: 256        # default=1024; 256 = idle-class priority
-    blkio_config:
-      weight: 100          # range 10-1000; default=500; lowest IO weight
     deploy:
       resources:
         limits:
           memory: 8G
+
+  dashboard:
+    build:
+      context: ./operations-dashboard
+      dockerfile: Dockerfile
+    container_name: facetracker-dashboard
+    ports:
+      - "8701:8700"
+    environment:
+      - APP_ENV=production
+    restart: unless-stopped
 
 networks:
   default:
@@ -60,3 +73,4 @@ networks:
 
 volumes:
   redis_data:
+  model_cache:

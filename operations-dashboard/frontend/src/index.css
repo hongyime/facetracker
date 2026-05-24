@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-background text-primary;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-surface border-border rounded-lg border p-4;
+  }
+}

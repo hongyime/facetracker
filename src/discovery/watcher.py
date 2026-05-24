@@ -150,6 +150,11 @@ class FileWatcher:
         
         for path in paths_to_watch:
             try:
+                p = Path(path)
+                if not p.exists() or not p.is_dir():
+                    print(f"Skipping non-existent or invalid directory: {path}")
+                    continue
+                    
                 self.observer.schedule(event_handler, path, recursive=True)
                 self.watched_paths.append(path)
                 print(f"Watching: {path}")

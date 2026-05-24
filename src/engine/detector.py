@@ -78,19 +78,20 @@ class FaceDetector:
         self.app = FaceAnalysis(
             name=model_name,
             providers=providers,
-            allowed_modules=['detection', 'landmarks']
+            allowed_modules=['detection', 'landmarks', 'recognition']
         )
         self.app.prepare(ctx_id=0, det_size=(640, 640))
         
         self.quality_scorer = QualityScorer()
         logger.info("FaceDetector initialized")
 
-    def detect(self, image: np.ndarray) -> List[FaceDetectionResult]:
+    def detect(self, image: np.ndarray, extract_embeddings: bool = True) -> List[FaceDetectionResult]:
         """
         Detect faces in an image with quality filtering.
 
         Args:
             image: RGB image as numpy array (H, W, 3).
+            extract_embeddings: Whether to extract embeddings during detection.
 
         Returns:
             List of FaceDetectionResult objects passing quality filters.
@@ -160,6 +161,18 @@ class FaceDetector:
                     area_ratio=area_ratio,
                     laplacian_variance=laplacian_var
                 )
+                
+                # Attach embedding if available
+                if extract_embeddings and hasattr(face, 'embedding') and face.embedding is not None:
+                    # Normalize embedding
+                    embedding = face.embedding.astype(np.float32)
+                    norm = np.linalg.norm(embedding)
+                    if norm > 0:
+                        embedding = embedding / norm
+                    result.embedding = embedding
+                else:
+                    result.embedding = None
+
                 results.append(result)
 
             logger.debug(f"Detected {len(results)} faces passing filters")

@@ -231,7 +231,9 @@ class BatchedFAISSIndex:
         if not self.live_ids:
             return
         
-        temp_path = self.ids_path.with_suffix('.ids.npy.tmp')
+        # Strip existing extension and add new ones
+        base_path = self.ids_path.with_suffix('')
+        temp_path = base_path.with_suffix('.npy.tmp')
         
         try:
             np.save(str(temp_path), np.array(self.live_ids, dtype=object), allow_pickle=True)

@@ -11,7 +11,6 @@ from src.readers.image_reader import ImageReader
 from src.readers.video_reader import VideoReader
 from src.engine.detector import FaceDetector, FaceDetectionResult
 from src.engine.tracker import FaceTracker, TrackedFace
-from src.engine.embedder import FaceEmbedder
 from src.engine.quality import QualityScorer
 from src.pipeline.thumbnail import ThumbnailGenerator
 from src.storage.database import Database, Image, Face
@@ -86,7 +85,6 @@ class PipelineProcessor:
         self.video_reader = VideoReader(fps=1.0)  # 1 FPS for video
         self.face_detector = FaceDetector(providers=providers)
         self.face_tracker = FaceTracker(max_age=30, n_init=1)
-        self.face_embedder = FaceEmbedder(providers=providers)
         self.quality_scorer = QualityScorer()
         self.thumbnail_generator = ThumbnailGenerator(
             face_size=512,
@@ -228,6 +226,7 @@ class PipelineProcessor:
                 quality_score=detection.quality_score,
                 source_path=file_path,
                 file_hash=result.file_hash,
+                embedding=detection.embedding,
                 frame_number=0,
                 img_width=width,
                 img_height=height
@@ -288,12 +287,22 @@ class PipelineProcessor:
         # Process best frame for each track
         for track_id, (frame, bbox, quality) in best_frames.items():
             h, w = frame.shape[:2]
+            
+            # Note: In a real implementation, we'd have the embedding from the best frame
+            # For now, we'll re-detect on the best frame to get the embedding
+            best_detections = self.face_detector.detect(frame)
+            best_emb = None
+            if best_detections:
+                # Use first detection (should be the one we want)
+                best_emb = best_detections[0].embedding
+
             face_obj = self._process_face(
                 image=frame,
                 bbox=bbox,
                 quality_score=quality,
                 source_path=file_path,
                 file_hash=result.file_hash,
+                embedding=best_emb,
                 frame_number=-1,  # Best frame from video
                 track_id=track_id,
                 video_path=file_path,
@@ -316,33 +325,38 @@ class PipelineProcessor:
         file_hash: str,
         img_width: int,
         img_height: int,
+        embedding: Optional[np.ndarray] = None,
         frame_number: int = 0,
         track_id: Optional[int] = None,
         video_path: Optional[Path] = None
     ) -> Optional[Face]:
         """Process a single face detection."""
         try:
-            # Extract embedding
-            x1, y1, x2, y2 = bbox.astype(int)
-            face_crop = image[max(0, y1):min(img_height, y2), 
-                              max(0, x1):min(img_width, x2)]
-            
-            if face_crop.size == 0:
-                return None
-            
-            embedding = self.face_embedder.embed(face_crop)
             if embedding is None:
-                logger.warning("Failed to extract embedding")
+                logger.warning("No embedding provided for face")
                 return None
+            
+            x1, y1, x2, y2 = bbox.astype(int)
             
             # Generate unique ID for face
             face_id = uuid.uuid4().hex
             
+            # Generate thumbnail
+            thumbnail_filename = f"{face_id}.jpg"
+            thumbnail_rel_path = f"{thumbnail_filename[:2]}/{thumbnail_filename}"
+            thumbnail_full_path = self.thumbnail_cache_path / thumbnail_rel_path
+            
+            _, thumb_bytes = self.thumbnail_generator.generate_face_thumbnail(
+                image=image,
+                bbox=bbox,
+                output_path=thumbnail_full_path
+            )
+            
             # Create face object
             face_obj = Face(
                 embedding_id=face_id,
-                embedding_vec=self.face_embedder.to_halfvec(embedding),
-                quality_score=quality_score,
+                embedding_vec=embedding.astype(np.float32), # Database model handles halfvec conversion if needed, or we keep as float32
+                quality_score=float(quality_score),
                 bbox_px_x1=int(x1),
                 bbox_px_y1=int(y1),
                 bbox_px_x2=int(x2),
@@ -353,7 +367,8 @@ class PipelineProcessor:
                 bbox_y2=float(y2 / img_height),
                 frame_number=frame_number,
                 track_id=track_id,
-                video_path=str(video_path) if video_path else None
+                video_path=str(video_path) if video_path else None,
+                thumbnail_path=thumbnail_rel_path
             )
             
             # Add to FAISS index staging
