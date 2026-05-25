@@ -1,6 +1,7 @@
 """Configuration module for Face Tracker application."""
 
-from pydantic_settings import BaseSettings
+from pydantic import Field, AliasChoices
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List, Optional
 import json
 
@@ -17,8 +18,11 @@ class DriveSource(BaseSettings):
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
-    # Storage Paths
-    face_storage_root: str = "Y:/faces"
+    # Storage Paths — accept HOST_FACE_STORAGE (.env) or FACE_STORAGE_ROOT (.env.example) for back-compat
+    face_storage_root: str = Field(
+        default="Y:/faces",
+        validation_alias=AliasChoices("FACE_STORAGE_ROOT", "HOST_FACE_STORAGE"),
+    )
     postgres_data_path: str = "./postgres_data"
     app_root: str = "C:/facetracker"
     
@@ -94,9 +98,12 @@ class Settings(BaseSettings):
     verbose_status: bool = True
     status_update_interval: int = 5
     
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",  # tolerate forward-compat keys / drift between .env and Settings
+        populate_by_name=True,
+    )
     
     @property
     def image_extensions(self) -> List[str]:

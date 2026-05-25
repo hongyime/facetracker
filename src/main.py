@@ -66,8 +66,12 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down Face Tracker API...")
-    if indexing_manager:
-        indexing_manager.stop()
+    mgr = getattr(app.state, "indexing_manager", None)
+    if mgr is not None:
+        try:
+            mgr.stop()
+        except Exception as e:
+            logger.error(f"Error stopping indexing manager: {e}")
         
     db.close()
     logger.info("Database connection closed")

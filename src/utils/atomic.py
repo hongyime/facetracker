@@ -37,14 +37,24 @@ def atomic_write_json(path: Path, data: Any) -> None:
 
 def atomic_operation(operation: Callable[[], Any], rollback: Callable[[Any], None]) -> Any:
     """
-    Execute an operation with rollback support.
-    
-    Args:
-        operation: Function to execute
-        rollback: Function to call with result if rollback needed
-        
-    Returns:
-        Result of the operation
+    Execute `operation()`. If it raises, invoke `rollback(None)` and re-raise.
+
+    The previous implementation ignored `rollback` entirely, so any caller
+    that relied on rollback semantics would silently fail to clean up. This
+    implementation:
+
+      * runs `operation()` and returns its result on success;
+      * on exception, calls `rollback(None)` for compensation (the contract
+        passes None because there's no partial result to hand back);
+      * rollback exceptions are logged but do not mask the original error.
     """
-    result = operation()
-    return result
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        return operation()
+    except Exception:
+        try:
+            rollback(None)
+        except Exception as rb_exc:
+            log.error("atomic_operation rollback failed: %s", rb_exc)
+        raise

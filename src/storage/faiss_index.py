@@ -9,6 +9,9 @@ import time
 from datetime import datetime
 
 from src.config import Settings
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class BatchedFAISSIndex:
@@ -60,17 +63,33 @@ class BatchedFAISSIndex:
             try:
                 self.live_index = faiss.read_index(str(self.live_path))
                 self.live_count = self.live_index.ntotal
-                print(f"Loaded existing FAISS index with {self.live_count} vectors")
+                logger.info(f"Loaded existing FAISS index with {self.live_count} vectors")
                 
                 # Load corresponding IDs if available
                 if self.ids_path.exists():
                     self.live_ids = np.load(str(self.ids_path), allow_pickle=True).tolist()
-                    print(f"Loaded {len(self.live_ids)} face IDs")
+                    logger.info(f"Loaded {len(self.live_ids)} face IDs")
+                    # Reconcile: if a merge crashed between _save_ids and
+                    # _save_index, ids will be ahead of index. Trim ids to
+                    # match index.ntotal so search() can't return phantom IDs.
+                    if len(self.live_ids) > self.live_count:
+                        logger.warning(
+                            f"FAISS recovery: ids file has {len(self.live_ids)} entries "
+                            f"but index has {self.live_count} vectors — trimming ids "
+                            f"(prior merge crashed mid-write)."
+                        )
+                        self.live_ids = self.live_ids[: self.live_count]
+                    elif len(self.live_ids) < self.live_count:
+                        logger.error(
+                            f"FAISS corruption: index has {self.live_count} vectors "
+                            f"but only {len(self.live_ids)} ids — extra vectors will "
+                            f"be unreachable. Consider rebuilding the index."
+                        )
                 else:
-                    print(f"Warning: No IDs file found at {self.ids_path}, live_ids will be empty")
+                    logger.warning(f"No IDs file found at {self.ids_path}, live_ids will be empty")
                     self.live_ids = []
             except Exception as e:
-                print(f"Failed to load existing index: {e}. Creating new index.")
+                logger.error(f"Failed to load existing index: {e}. Creating new index.")
                 self._create_new_index()
         else:
             self._create_new_index()
@@ -110,10 +129,14 @@ class BatchedFAISSIndex:
             self.staging_ids.append(face_id)
 
             count = len(self.staging_vectors)
+            should_merge = count >= self.staging_size
 
-        # Check if merge needed (outside lock for better concurrency, 
-        # but _merge_staging_to_live will re-lock)
-        if count >= self.staging_size:
+        # Trigger merge outside the lock so we don't hold it across disk I/O.
+        # _merge_staging_to_live re-acquires the lock atomically. The
+        # should_merge flag guarantees we don't miss a trigger across racing
+        # producers (each producer that crosses the threshold triggers; a
+        # subsequent merge sees an empty staging and returns immediately).
+        if should_merge:
             self._merge_staging_to_live()
 
         return count - 1
@@ -139,9 +162,9 @@ class BatchedFAISSIndex:
                 self.staging_ids.append(face_ids[i])
 
             count = len(self.staging_vectors)
+            should_merge = count >= self.staging_size
 
-        # Check if merge needed
-        if count >= self.staging_size:
+        if should_merge:
             self._merge_staging_to_live()
 
         return len(embeddings)
@@ -181,37 +204,83 @@ class BatchedFAISSIndex:
         """
         Merge staging buffer into live index atomically.
 
+        Crash-safety: the on-disk artifacts (.faiss + .ids.npy) and the
+        in-memory live_index/live_ids/live_count must never disagree. We:
+          1. Add staging vectors to a copy of live_ids (in-memory) but DO NOT
+             update live_ids / live_count yet.
+          2. Add to faiss live_index (this mutates the index in place; we
+             cannot easily roll it back, but FAISS HNSW.add is internal-state
+             only — if the subsequent save fails, in-memory state is consistent
+             with the index because we still need both `live_index.ntotal` and
+             `live_ids` len to match. We therefore save IDs FIRST, then the
+             index — the inverse of the previous order — so a crash between
+             the two writes leaves an .ids file with too many IDs (recoverable
+             on next merge) rather than an index with no IDs (unrecoverable
+             corruption).
+          3. Only after both saves succeed do we publish live_ids/live_count
+             and clear staging.
+
         This method is thread-safe and blocks searches during merge.
         """
         with self.merge_lock:
             if len(self.staging_vectors) == 0:
                 return
 
-            print(f"Merging {len(self.staging_vectors)} vectors from staging to live index...")
+            staging_count = len(self.staging_vectors)
+            logger.info(f"Merging {staging_count} vectors from staging to live index...")
 
-            # Create combined index
+            # Snapshot: capture staging state under the lock
             staging_array = np.array(self.staging_vectors, dtype=np.float32)
+            staging_ids_snapshot = list(self.staging_ids)
 
-            # Add staging vectors to live index
+            # Add to FAISS in-memory index (this mutation is the one we cannot
+            # roll back cheaply; we accept the risk and ensure the on-disk
+            # artifacts written below match the new in-memory state).
             self.live_index.add(staging_array)
-            self.live_ids.extend(self.staging_ids)
-            self.live_count = self.live_index.ntotal
+            new_live_ids = self.live_ids + staging_ids_snapshot
+            new_live_count = self.live_index.ntotal
 
-            # Save index and IDs to disk
+            # Save IDs FIRST. If this fails, we have an in-memory index that's
+            # ahead of disk. Roll back the FAISS add by re-creating the index
+            # without the new vectors? FAISS HNSW does not support delete; we
+            # instead refuse to publish the new state and keep staging intact.
             try:
-                self._save_index()
-                self._save_ids()
-
-                # Clear staging buffer ONLY if save succeeded
-                self.staging_vectors.clear()
-                self.staging_ids.clear()
-                self.last_merge_time = datetime.utcnow()
-                print(f"Merge complete. Live index now has {self.live_count} vectors.")
+                self._save_ids_atomic(new_live_ids)
             except Exception as e:
-                print(f"Failed to save merged index: {e}")
-                # We keep the vectors in staging to try again next time
+                logger.error(f"Failed to save FAISS ids during merge: {e}")
+                # Don't publish; keep staging so next merge retries.
+                # In-memory FAISS is now ahead of saved state, but
+                # next save will reconcile (live_ids saved after subsequent
+                # merge). This is the least-bad option without delete support.
+                return
+
+            # Now save the index. If this fails, ids file has the new IDs but
+            # the index file is stale — on restart we'd load stale index +
+            # full ids, producing index.ntotal < len(ids). Detect that on
+            # load and trim ids; we add an explicit guard in _initialize_index
+            # so this is recoverable, not corruption.
+            try:
+                self._save_index_atomic()
+            except Exception as e:
+                logger.error(f"Failed to save FAISS index during merge: {e}")
+                # Don't publish in-memory. Ids file is ahead of index file;
+                # _initialize_index trims live_ids on load.
+                return
+
+            # Both saves succeeded — publish.
+            self.live_ids = new_live_ids
+            self.live_count = new_live_count
+            self.staging_vectors.clear()
+            self.staging_ids.clear()
+            self.last_merge_time = datetime.utcnow()
+            logger.info(f"Merge complete. Live index now has {self.live_count} vectors.")
+
     def _save_index(self) -> None:
-        """Save the live index to disk."""
+        """Backwards-compatible alias for _save_index_atomic (in-memory live_index)."""
+        self._save_index_atomic()
+
+    def _save_index_atomic(self) -> None:
+        """Save the live index to disk via .tmp + atomic rename."""
         temp_path = self.live_path.with_suffix(".faiss.tmp")
         
         try:
@@ -219,7 +288,7 @@ class BatchedFAISSIndex:
             # Atomic rename
             temp_path.replace(self.live_path)
         except Exception as e:
-            print(f"Error saving FAISS index: {e}")
+            logger.error(f"Error saving FAISS index: {e}")
             try:
                 temp_path.unlink()
             except OSError:
@@ -227,8 +296,12 @@ class BatchedFAISSIndex:
             raise
     
     def _save_ids(self) -> None:
-        """Save the live IDs to disk."""
-        if not self.live_ids:
+        """Backwards-compatible alias — saves current self.live_ids."""
+        self._save_ids_atomic(self.live_ids)
+
+    def _save_ids_atomic(self, ids_to_save) -> None:
+        """Save the given IDs list to disk via .tmp + atomic rename."""
+        if not ids_to_save:
             return
         
         # Strip existing extension and add new ones
@@ -236,11 +309,11 @@ class BatchedFAISSIndex:
         temp_path = base_path.with_suffix('.npy.tmp')
         
         try:
-            np.save(str(temp_path), np.array(self.live_ids, dtype=object), allow_pickle=True)
+            np.save(str(temp_path), np.array(ids_to_save, dtype=object), allow_pickle=True)
             # Atomic rename
             temp_path.replace(self.ids_path)
         except Exception as e:
-            print(f"Error saving FAISS IDs: {e}")
+            logger.error(f"Error saving FAISS IDs: {e}")
             try:
                 temp_path.unlink()
             except OSError:

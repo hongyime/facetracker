@@ -127,22 +127,23 @@ class OneDriveHandler:
                 result["is_local"] = True
                 
         except Exception as e:
-            print(f"Error detecting OneDrive status for {file_path}: {e}")
+            logger.error(f"Error detecting OneDrive status for {file_path}: {e}")
         
         return result
     
     def _check_reparse_point(self, file_path: str) -> bool:
         """
-        Check if file has a reparse point (symlink marker).
-        
-        Args:
-            file_path: Path to check
-            
-        Returns:
-            True if reparse point detected
+        Check if file has a OneDrive-specific reparse point.
+
+        Returns True only when fsutil's output mentions onedrive- or cloud-
+        related tags. The previous implementation also returned True whenever
+        `returncode == 0`, which is true for any reparse point including
+        unrelated symlinks/junctions — that produced false positives that
+        triggered spurious downloads. Now strictly content-based.
         """
         try:
-            # Use Windows fsutil command
+            # Use Windows fsutil command. file_path is passed as a separate
+            # argv element so the OS does no shell-string interpolation.
             result = subprocess.run(
                 ["fsutil", "reparsepoint", "query", file_path],
                 capture_output=True,
@@ -150,37 +151,38 @@ class OneDriveHandler:
                 timeout=5,
             )
             
-            # Check for OneDrive-related reparse tags
+            if result.returncode != 0:
+                return False
             output = result.stdout.lower()
-            return "onedrive" in output or "cloud" in output or result.returncode == 0
+            return ("onedrive" in output) or ("cloud" in output)
             
         except (subprocess.SubprocessError, FileNotFoundError):
             return False
     
     def _check_cloud_attribute(self, file_path: str) -> bool:
         """
-        Check if file has cloud attribute using PowerShell.
-        
-        Args:
-            file_path: Path to check
-            
-        Returns:
-            True if cloud attribute detected
+        Check if file has cloud / reparse / sparse attribute.
+
+        Hardened against PowerShell command injection: `file_path` was
+        previously interpolated into the script source. A filename containing
+        a single quote would break out of the quoted argument and execute
+        arbitrary PowerShell. We now read the path from $args[0] inside the
+        script and pass it as a separate argv element.
         """
         try:
-            # PowerShell command to check OneDrive status
-            ps_command = f"""
-            $item = Get-Item '{file_path}' -ErrorAction SilentlyContinue
-            if ($item) {{
-                $attributes = $item.Attributes
-                return ($attributes -band [System.IO.FileAttributes]::ReparsePoint) -or
-                       ($attributes -band [System.IO.FileAttributes]::SparseFile)
-            }}
-            return $false
-            """
+            ps_command = (
+                "$p = $args[0]; "
+                "$item = Get-Item -LiteralPath $p -ErrorAction SilentlyContinue; "
+                "if ($item) { "
+                "  $a = $item.Attributes; "
+                "  $r = ($a -band [System.IO.FileAttributes]::ReparsePoint) -or "
+                "       ($a -band [System.IO.FileAttributes]::SparseFile); "
+                "  if ($r) { 'true' } else { 'false' } "
+                "} else { 'false' }"
+            )
             
             result = subprocess.run(
-                ["powershell", "-Command", ps_command],
+                ["powershell", "-NoProfile", "-Command", ps_command, "--", file_path],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -247,11 +249,16 @@ class OneDriveHandler:
                 # Create temp path
                 temp_path = self.temp_dir / Path(file_path).name
                 
-                # Use PowerShell Copy-Item which handles Files On-Demand download better
-                ps_command = f"Copy-Item -Path '{file_path}' -Destination '{temp_path}' -Force"
+                # Use PowerShell Copy-Item with -LiteralPath; paths come from
+                # $args so a filename containing a quote can't break out of
+                # the script.
+                ps_command = (
+                    "Copy-Item -LiteralPath $args[0] -Destination $args[1] -Force"
+                )
                 
                 result = subprocess.run(
-                    ["powershell", "-Command", ps_command],
+                    ["powershell", "-NoProfile", "-Command", ps_command, "--",
+                     file_path, str(temp_path)],
                     capture_output=True,
                     text=True,
                     timeout=self.download_timeout,
@@ -286,12 +293,11 @@ class OneDriveHandler:
             return False
         
         try:
-            # Correct PowerShell command to free up space (Attribute 0x100000 = cloud-only)
-            # attrib +U <file> is the simplest way for OneDrive
-            ps_command = f"attrib +U '{file_path}'"
-            
+            # `attrib +U <file>` marks the file as cloud-only on OneDrive.
+            # Pass file_path as an argv element to avoid shell-string
+            # interpolation; attrib accepts an unquoted path argument.
             result = subprocess.run(
-                ["cmd", "/c", ps_command],
+                ["attrib", "+U", file_path],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -300,12 +306,29 @@ class OneDriveHandler:
             if result.returncode == 0:
                 logger.info(f"Reverted to online-only: {file_path}")
                 return True
-            
-            # Fallback to PowerShell if needed
-            ps_command = f"powershell.exe -Command \"Get-Item '{file_path}' | % {{ $_.Attributes = $_.Attributes -bor [System.IO.FileAttributes]::Offline }}\""
-            # Actually, attrib +U is specifically for OneDrive cloud-only status
-            
-            logger.warning(f"Failed to revert {file_path}: {result.stderr}")
+
+            # PowerShell fallback: set the Offline attribute via $args[0].
+            # Same hardening as elsewhere — path passed as argv, not interpolated.
+            ps_command = (
+                "$p = $args[0]; "
+                "Get-Item -LiteralPath $p | "
+                "ForEach-Object { $_.Attributes = $_.Attributes -bor "
+                "[System.IO.FileAttributes]::Offline }"
+            )
+            fb = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_command, "--", file_path],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if fb.returncode == 0:
+                logger.info(f"Reverted to online-only via PS fallback: {file_path}")
+                return True
+
+            logger.warning(
+                f"Failed to revert {file_path}: attrib stderr={result.stderr!r}, "
+                f"ps stderr={fb.stderr!r}"
+            )
             return False
             
         except Exception as e:

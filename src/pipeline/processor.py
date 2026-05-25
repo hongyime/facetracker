@@ -21,6 +21,35 @@ from src.config import settings
 logger = get_logger(__name__)
 
 
+def _bbox_iou(a, b) -> float:
+    """IoU between two bounding boxes given as [x1, y1, x2, y2]."""
+    ax1, ay1, ax2, ay2 = float(a[0]), float(a[1]), float(a[2]), float(a[3])
+    bx1, by1, bx2, by2 = float(b[0]), float(b[1]), float(b[2]), float(b[3])
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    a_area = max(0.0, (ax2 - ax1)) * max(0.0, (ay2 - ay1))
+    b_area = max(0.0, (bx2 - bx1)) * max(0.0, (by2 - by1))
+    union = a_area + b_area - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _match_detection_to_tracked(detections, tracked_bbox, min_iou: float = 0.3):
+    """Return the detection with highest IoU vs `tracked_bbox`, or None."""
+    best = None
+    best_iou = min_iou
+    for det in detections:
+        iou = _bbox_iou(det.bbox, tracked_bbox)
+        if iou > best_iou:
+            best_iou = iou
+            best = det
+    return best
+
+
 class ProcessingResult:
     """Result of processing a single file."""
 
@@ -36,6 +65,11 @@ class ProcessingResult:
         self.is_video: bool = False
         self.video_frames_processed: int = 0
         self.track_count: int = 0
+        # Source media dimensions (populated by _process_image / _process_video).
+        # Stored on the Image record so downstream code can reason about
+        # aspect ratio, normalized bboxes for new readers, etc.
+        self.width: int = 0
+        self.height: int = 0
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
@@ -212,6 +246,8 @@ class PipelineProcessor:
         result.faces_detected = len(detections)
         
         height, width = image.shape[:2]
+        result.width = int(width)
+        result.height = int(height)
         
         if not detections:
             logger.debug(f"No faces detected in {file_path}")
@@ -239,18 +275,29 @@ class PipelineProcessor:
         result.status = "success"
 
     def _process_video(self, file_path: Path, result: ProcessingResult):
-        """Process a video file with tracking at 1 FPS."""
+        """Process a video file with tracking at 1 FPS.
+
+        For each track, we keep the BEST-quality frame (by detector quality
+        score, matched to the tracker bbox via IoU). On finalization we
+        re-detect on that best frame and pull the embedding from the
+        detection that overlaps the track — never blindly index 0.
+        """
         result.is_video = True
         
         # Reset tracker for new video
         self.face_tracker.reset()
         
-        # Track best frame per track ID
+        # Track best frame per track ID: (frame, bbox, quality)
         best_frames: Dict[int, Tuple[np.ndarray, np.ndarray, float]] = {}
         
         # Process frames
         frame_count = 0
         for frame, timestamp in self.video_reader.read_frames(file_path):
+            # Capture media dimensions from the first frame we see.
+            if frame_count == 0:
+                fh, fw = frame.shape[:2]
+                result.width = int(fw)
+                result.height = int(fh)
             # Detect faces in frame
             detections = self.face_detector.detect(frame)
             
@@ -261,21 +308,18 @@ class PipelineProcessor:
                 # Update tracker
                 tracked_faces = self.face_tracker.update(det_list, frame_count, timestamp)
                 
-                # Store best frame per track
+                # Store best frame per track — match tracker bbox to detection
+                # by IoU and use the detector's actual quality_score, not a
+                # hardcoded constant. If no detection overlaps the tracked
+                # box, skip this frame for this track (the tracker may be
+                # extrapolating; we don't want to commit a track that the
+                # detector doesn't see).
                 for tracked in tracked_faces:
+                    matched_det = _match_detection_to_tracked(detections, tracked.bbox)
+                    if matched_det is None:
+                        continue
+                    quality = float(matched_det.quality_score)
                     track_id = tracked.track_id
-                    
-                    # Find corresponding detection
-                    det_idx = -1
-                    for i, d in enumerate(detections):
-                        # Simple overlap check or just assume same order if tracker matches
-                        # For now, just use the detection's quality score if we can find it
-                        pass
-                    
-                    quality = 0.5 # Default if not found
-                    # In a real implementation, we'd match detection to tracked face
-                    
-                    # Keep best quality frame
                     if track_id not in best_frames or quality > best_frames[track_id][2]:
                         best_frames[track_id] = (frame.copy(), tracked.bbox.copy(), quality)
             
@@ -284,17 +328,23 @@ class PipelineProcessor:
         result.video_frames_processed = frame_count
         result.track_count = len(best_frames)
         
-        # Process best frame for each track
+        # Process best frame for each track. Re-detect on the saved best
+        # frame and pull the embedding from the detection whose bbox best
+        # overlaps the track's bbox — using detections[0] blindly causes
+        # cross-identity contamination when the frame has multiple faces.
         for track_id, (frame, bbox, quality) in best_frames.items():
             h, w = frame.shape[:2]
             
-            # Note: In a real implementation, we'd have the embedding from the best frame
-            # For now, we'll re-detect on the best frame to get the embedding
             best_detections = self.face_detector.detect(frame)
-            best_emb = None
-            if best_detections:
-                # Use first detection (should be the one we want)
-                best_emb = best_detections[0].embedding
+            matched_det = _match_detection_to_tracked(best_detections, bbox)
+            if matched_det is None:
+                logger.warning(
+                    f"Skipping track {track_id} in {file_path}: "
+                    f"no detection overlaps tracker bbox on best frame "
+                    f"(detections={len(best_detections)})"
+                )
+                continue
+            best_emb = matched_det.embedding
 
             face_obj = self._process_face(
                 image=frame,
@@ -385,16 +435,14 @@ class PipelineProcessor:
         try:
             # Get file stats
             stat = result.file_path.stat()
-            
-            # Get image dimensions from first frame/image if available
-            width, height = 0, 0
-            # This would normally be passed from the reader
-            
+
             image_record = Image(
                 file_path=str(result.file_path),
                 file_hash=result.file_hash,
                 file_size=stat.st_size,
                 file_mtime=stat.st_mtime,
+                width=result.width or None,
+                height=result.height or None,
                 status="completed",
                 face_count=result.faces_processed,
                 is_video=result.is_video,

@@ -1,6 +1,7 @@
 
 import os
 import sys
+import time
 from pathlib import Path
 
 # Add src to path
@@ -56,7 +57,6 @@ def test_manager():
     print("Test complete.")
 
 if __name__ == "__main__":
-    import time
     try:
         test_manager()
     except Exception as e:

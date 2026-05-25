@@ -9,7 +9,7 @@ import time
 from sqlalchemy.orm import Session
 
 from src.config import settings
-from src.storage.database import Database, get_database
+from src.storage.database import Database, get_database, get_db_session
 from src.storage.faiss_index import BatchedFAISSIndex
 from src.engine.embedder import FaceEmbedder
 from src.engine.detector import FaceDetector
@@ -26,12 +26,8 @@ _search_engine = None
 
 
 def get_db():
-    """Dependency to get database session."""
-    db = get_database(settings.database_url)
-    try:
-        yield db.session
-    finally:
-        pass  # Database class manages session lifetime
+    """Dependency to get database session — request-scoped, pool-safe."""
+    yield from get_db_session(settings.database_url)
 
 
 def get_search_service() -> SearchEngine:
@@ -183,19 +179,12 @@ async def search_within_identity(
 ):
     """
     Search for faces within a specific identity cluster.
-    
-    Args:
-        identity_id: Identity cluster ID
-        image: Query image
-        top_k: Number of results
-        
-    Returns:
-        Matching faces from the specified identity
+
+    NOT IMPLEMENTED. The previous version returned a hardcoded empty list,
+    which silently misled callers. Returns HTTP 501 instead so clients
+    correctly surface the gap.
     """
-    # This would require database filtering by identity
-    # For now, return a placeholder response
-    return {
-        "identity_id": identity_id,
-        "message": "Identity-restricted search - coming soon",
-        "results": [],
-    }
+    raise HTTPException(
+        status_code=501,
+        detail="search_within_identity is not implemented yet",
+    )

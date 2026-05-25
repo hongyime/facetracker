@@ -1,21 +1,17 @@
 """Stats API routes for dashboard and monitoring."""
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException
 from typing import Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from src.config import settings
-from src.storage.database import get_database, Image, Face, Identity
+from src.storage.database import get_database, get_db_session, Image, Face, Identity
 
 router = APIRouter(prefix="/stats")
 
 def get_db():
-    """Dependency to get database session."""
-    db = get_database(settings.database_url)
-    try:
-        yield db.session
-    finally:
-        pass
+    """Dependency to get database session — request-scoped, pool-safe."""
+    yield from get_db_session(settings.database_url)
 
 @router.get("")
 async def get_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
@@ -59,19 +55,16 @@ async def get_scan_progress(request: Request) -> Dict[str, Any]:
 
 @router.get("/onedrive")
 async def get_onedrive_stats() -> Dict[str, Any]:
-    """Get OneDrive-specific statistics."""
-    return {
-        "files_processed": 0,
-        "files_online_only": 0,
-        "space_saved_mb": 0,
-        "download_failures": 0,
-        "revert_failures": 0,
-    }
+    """Get OneDrive-specific statistics.
+
+    NOT IMPLEMENTED — returns HTTP 501 rather than fabricated zeros.
+    """
+    raise HTTPException(status_code=501, detail="stats.onedrive is not implemented yet")
 
 @router.get("/recent-activity")
 async def get_recent_activity(limit: int = 50) -> Dict[str, Any]:
-    """Get recent indexing activity."""
-    return {
-        "activities": [],
-        "total": 0,
-    }
+    """Get recent indexing activity.
+
+    NOT IMPLEMENTED — returns HTTP 501 rather than a fabricated empty list.
+    """
+    raise HTTPException(status_code=501, detail="stats.recent-activity is not implemented yet")

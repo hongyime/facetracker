@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from src.config import settings
-from src.storage.database import get_database, Identity, Face, FaceIdentityMap
+from src.storage.database import get_database, get_db_session, Identity, Face, FaceIdentityMap
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +54,8 @@ class VerifyRequest(BaseModel):
 
 
 def get_db():
-    """Dependency to get database session."""
-    db = get_database(settings.database_url)
-    try:
-        yield db.session
-    finally:
-        pass
+    """Dependency to get database session — request-scoped, pool-safe."""
+    yield from get_db_session(settings.database_url)
 
 
 @router.get("", response_model=IdentityListResponse)
@@ -82,7 +78,12 @@ async def list_identities(
     results = []
     for identity in identities:
         face_count = db.query(func.count(FaceIdentityMap.id)).filter(FaceIdentityMap.identity_id == identity.id).scalar()
-        
+
+        # Real average quality score across faces in this identity, not 0.8.
+        avg_quality = db.query(func.avg(Face.quality_score)).join(
+            FaceIdentityMap, FaceIdentityMap.face_id == Face.id
+        ).filter(FaceIdentityMap.identity_id == identity.id).scalar()
+
         primary_face = db.query(Face).join(FaceIdentityMap).filter(
             FaceIdentityMap.identity_id == identity.id,
             FaceIdentityMap.is_primary == True
@@ -99,7 +100,7 @@ async def list_identities(
             face_count=face_count or 0,
             created_at=identity.created_at.isoformat(),
             updated_at=identity.updated_at.isoformat(),
-            avg_quality_score=0.8,
+            avg_quality_score=float(avg_quality) if avg_quality is not None else 0.0,
             thumbnail_url=primary_face.thumbnail_path if primary_face else None
         ))
         
@@ -122,15 +123,31 @@ async def get_identity(identity_id: str, db: Session = Depends(get_db)):
     identity = db.query(Identity).filter(Identity.id == identity_int_id).first()
     if not identity:
         raise HTTPException(status_code=404, detail="Identity not found")
-        
+
     face_count = db.query(func.count(FaceIdentityMap.id)).filter(FaceIdentityMap.identity_id == identity.id).scalar()
-    
+
+    avg_quality = db.query(func.avg(Face.quality_score)).join(
+        FaceIdentityMap, FaceIdentityMap.face_id == Face.id
+    ).filter(FaceIdentityMap.identity_id == identity.id).scalar()
+
+    # Reuse the same primary-face lookup as the list endpoint so /{id} and
+    # the list view return consistent thumbnails. Previously this returned
+    # None unconditionally.
+    primary_face = db.query(Face).join(FaceIdentityMap).filter(
+        FaceIdentityMap.identity_id == identity.id,
+        FaceIdentityMap.is_primary == True
+    ).first()
+    if not primary_face:
+        primary_face = db.query(Face).join(FaceIdentityMap).filter(
+            FaceIdentityMap.identity_id == identity.id
+        ).first()
+
     return IdentityResponse(
         identity_id=str(identity.id),
         name=identity.name,
         face_count=face_count or 0,
         created_at=identity.created_at.isoformat(),
         updated_at=identity.updated_at.isoformat(),
-        avg_quality_score=0.8,
-        thumbnail_url=None
+        avg_quality_score=float(avg_quality) if avg_quality is not None else 0.0,
+        thumbnail_url=primary_face.thumbnail_path if primary_face else None
     )

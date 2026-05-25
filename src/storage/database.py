@@ -47,7 +47,7 @@ class Face(Base):
     __tablename__ = "faces"
     
     id = Column(Integer, primary_key=True, index=True)
-    image_id = Column(Integer, ForeignKey("images.id"), nullable=False)
+    image_id = Column(Integer, ForeignKey("images.id", ondelete="CASCADE"), nullable=False, index=True)
     embedding_id = Column(String(64), unique=True, nullable=False, index=True)
     
     # Normalized bounding box (0-1)
@@ -204,7 +204,13 @@ class OneDriveFile(Base):
 
 # Database connection management
 class Database:
-    """Database connection and session manager."""
+    """Database connection and session manager.
+
+    NOTE: This class still exists for the indexing pipeline and the FastAPI
+    lifespan, which use the long-lived `session` property. For request-scoped
+    work in HTTP routes, prefer `get_db_session()` below — it yields a fresh
+    Session per request and closes it in finally.
+    """
     
     def __init__(self, database_url: str):
         self.database_url = database_url
@@ -275,16 +281,62 @@ class Database:
         self.session.rollback()
 
 
+# --- Module-level engine cache ------------------------------------------------
+# `get_database(url)` used to construct a NEW Database (and therefore a new
+# SQLAlchemy engine + connection pool) on EVERY call, including every HTTP
+# request. Routes invoking it per-request leaked connection pools indefinitely.
+# We now cache one Database (one engine) per database_url.
+import threading as _threading
+_DB_CACHE: dict = {}
+_DB_CACHE_LOCK = _threading.Lock()
+
+
 def get_database(database_url: str) -> Database:
+    """Return a connected Database for the given URL, cached per process.
+
+    Safe to call from multiple threads / requests; only one engine is created
+    per unique URL.
     """
-    Factory function to create and connect a database instance.
-    
-    Args:
-        database_url: PostgreSQL connection URL
-        
-    Returns:
-        Connected Database instance
+    db = _DB_CACHE.get(database_url)
+    if db is not None:
+        return db
+    with _DB_CACHE_LOCK:
+        db = _DB_CACHE.get(database_url)
+        if db is None:
+            db = Database(database_url)
+            db.connect()
+            _DB_CACHE[database_url] = db
+        return db
+
+
+def get_db_session(database_url: str):
+    """FastAPI-style request-scoped Session generator.
+
+    Usage in a route module:
+        from src.config import settings
+        from src.storage.database import get_db_session
+        def get_db():
+            yield from get_db_session(settings.database_url)
+        @router.get(...)
+        def handler(db: Session = Depends(get_db)): ...
+
+    Each request gets its own Session bound to the cached engine; the Session
+    is closed in finally so connections return to the pool deterministically.
     """
-    db = Database(database_url)
-    db.connect()
-    return db
+    db = get_database(database_url)
+    session = db.SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+def reset_database_cache() -> None:
+    """Dispose all cached engines. Intended for tests / shutdown."""
+    with _DB_CACHE_LOCK:
+        for db in _DB_CACHE.values():
+            try:
+                db.close()
+            except Exception:
+                pass
+        _DB_CACHE.clear()
