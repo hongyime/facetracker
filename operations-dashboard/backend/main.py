@@ -2,6 +2,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Requ
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from contextlib import asynccontextmanager
 import asyncio
 import json
 import logging
@@ -12,14 +13,32 @@ from datetime import datetime
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Operations Dashboard API")
+
+# Lifespan replaces the deprecated @app.on_event hooks. Starlette removed
+# on_event handler invocation in newer versions; using lifespan is the only
+# supported path going forward and lets us cleanly cancel the broadcast task
+# on shutdown instead of leaking it.
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(broadcast_health_status())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+app = FastAPI(title="Operations Dashboard API", lifespan=lifespan)
 
 # CORS: pin explicit origins. Browsers reject `allow_credentials=True` combined
 # with `allow_origins=["*"]`, so the previous config was both insecure and
 # functionally broken for credentialed requests.
 _default_origins = (
-    "http://localhost:5151,http://localhost:3000,http://localhost:8700,"
-    "http://127.0.0.1:5151,http://127.0.0.1:3000,http://127.0.0.1:8700"
+    "http://localhost:5454,http://localhost:3000,http://localhost:8700,http://localhost:8701,"
+    "http://127.0.0.1:5454,http://127.0.0.1:3000,http://127.0.0.1:8700,http://127.0.0.1:8701"
 )
 _allowed = [
     o.strip() for o in os.environ.get("DASHBOARD_CORS_ORIGINS", _default_origins).split(",")
@@ -167,14 +186,13 @@ async def broadcast_health_status():
                 }
             ]
             await manager.broadcast(json.dumps(mock_data))
+        except asyncio.CancelledError:
+            # Lifespan shutdown — bubble up so the lifespan finally-block
+            # observes the cancellation cleanly.
+            raise
         except Exception as e:
             logger.error(f"broadcast loop error: {e}")
         await asyncio.sleep(5)
-
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(broadcast_health_status())
 
 
 # Fallback for SPA — mount static last so API/WS routes aren't shadowed.

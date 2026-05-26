@@ -5,7 +5,7 @@ import { Header } from '../components/Header';
 import { DataTable } from '../components/DataTable';
 import { StatusBadge } from '../components/StatusBadge';
 
-const API_BASE = 'http://localhost:5151/api/v1';
+const API_BASE = 'http://localhost:5454/api/v1';
 
 export default function IdentitiesPage() {
   const { data, isLoading } = useQuery({
