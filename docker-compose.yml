@@ -39,9 +39,12 @@ services:
       - ${APP_ROOT:-C:/facetracker}:/app/code:ro
       - ${APP_ROOT:-C:/facetracker}/src:/app/src:ro
       - model_cache:/root/.insightface/models
-      # Physical drive mounts for scanning
-      - C:/:/mnt/c:ro
-      - Z:/:/mnt/z:ro
+      # Physical drive mounts for scanning.
+      # Conservative first-run scope: only Y: (face storage drive).
+      # Re-enable C: / Z: once you trust the pipeline and have the patience
+      # for a multi-drive full crawl.
+      # - C:/:/mnt/c:ro
+      # - Z:/:/mnt/z:ro
       - Y:/:/mnt/y:ro
     ports:
       - "${DASHBOARD_PORT:-5151}:8000"
@@ -57,10 +60,10 @@ services:
           # Memory cap so a runaway face_recognition batch can't OOM the host.
           memory: 8G
           # CPU cap — face detection is single-threaded per worker. With
-          # index_workers=2 we use up to 2 CPU cores; cap at 3.0 to leave
-          # one for the reaper + uvicorn + everything else. Bump if you
-          # want faster crawl, lower if your machine is a daily-driver.
-          cpus: "3.0"
+          # index_workers=1 we use up to 1 CPU core for detection; cap at 2.0
+          # to leave one for the reaper + uvicorn + everything else. Bump if
+          # you want faster crawl, lower if your machine feels sluggish.
+          cpus: "2.0"
 
   dashboard:
     build:
