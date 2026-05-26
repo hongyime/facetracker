@@ -54,7 +54,13 @@ services:
     deploy:
       resources:
         limits:
+          # Memory cap so a runaway face_recognition batch can't OOM the host.
           memory: 8G
+          # CPU cap — face detection is single-threaded per worker. With
+          # index_workers=2 we use up to 2 CPU cores; cap at 3.0 to leave
+          # one for the reaper + uvicorn + everything else. Bump if you
+          # want faster crawl, lower if your machine is a daily-driver.
+          cpus: "3.0"
 
   dashboard:
     build:
