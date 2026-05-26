@@ -52,7 +52,23 @@ class Settings(BaseSettings):
     # FAISS Indexing
     faiss_staging_size: int = 10000
     faiss_merge_timeout: int = 300
+    # Index type. Two values supported:
+    #   "HNSW64"  - legacy graph index (good search, O(N) persistence cost,
+    #               viable to ~30k vectors)
+    #   "IVFFlat" - clustered inverted-file index (O(1) add, smaller writes,
+    #               viable to millions). Switch via config + run the
+    #               scripts/faiss_migrate_ivf.py migration once.
     faiss_index_type: str = "HNSW64"
+    # IVFFlat tuning. Only used when faiss_index_type == "IVFFlat".
+    #   nlist : number of Voronoi cells. Rule of thumb K = 4*sqrt(N).
+    #           512 is appropriate for ~16k-64k vectors. Bump to 4096 once
+    #           total faces crosses ~250k. nlist requires nlist*8 training
+    #           points minimum (FAISS hard floor) — picking too high here
+    #           will block the migration script.
+    #   nprobe: cells to scan at query time. K/16 is a typical recall
+    #           sweet spot (~95-98% recall on face embeddings).
+    faiss_ivf_nlist: int = 512
+    faiss_ivf_nprobe: int = 32
 
     # FAISS outbox reaper (Phase 2 — outbox pattern)
     faiss_reaper_poll_ms: int = 500            # how often the reaper wakes

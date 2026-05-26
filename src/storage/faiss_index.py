@@ -68,8 +68,15 @@ class BatchedFAISSIndex:
             try:
                 self.live_index = faiss.read_index(str(self.live_path))
                 self.live_count = self.live_index.ntotal
-                logger.info(f"Loaded existing FAISS index with {self.live_count} vectors")
-                
+                # Set nprobe on IVF indexes after load — write_index does NOT
+                # persist nprobe, so we must apply it from config every boot.
+                self._apply_ivf_runtime_params()
+                logger.info(
+                    f"Loaded existing FAISS index "
+                    f"(type={type(self.live_index).__name__}) "
+                    f"with {self.live_count} vectors"
+                )
+
                 # Load corresponding IDs if available
                 if self.ids_path.exists():
                     self.live_ids = np.load(str(self.ids_path), allow_pickle=True).tolist()
@@ -100,19 +107,104 @@ class BatchedFAISSIndex:
                 self._create_new_index()
         else:
             self._create_new_index()
-    
+
     def _create_new_index(self) -> None:
-        """Create a new HNSW index."""
-        # HNSW64: M=64, efConstruction=200
-        self.live_index = faiss.IndexHNSWFlat(self.dimension, 64, faiss.METRIC_INNER_PRODUCT)
-        self.live_index.hnsw.efConstruction = 200
+        """Create a new FAISS index per config.faiss_index_type.
+
+        Two index families supported:
+          - "HNSW64" (default, legacy): immediately usable, O(N) persistence cost.
+          - "IVFFlat": needs train() before add() — created as an untrained
+            shell here and trained on first merge once we have enough vectors
+            (>= nlist * 8 — FAISS minimum recommendation).
+
+        For IVFFlat, the migration script `scripts/faiss_migrate_ivf.py`
+        bootstraps a trained index from the existing DB so a fresh boot
+        with the migrated file Just Works.
+        """
+        index_type = (self.config.faiss_index_type or "HNSW64").upper()
+        if index_type == "IVFFLAT":
+            # Inverted-file flat index. Quantizer is a flat IP index that holds
+            # the centroids; the IVF layer dispatches queries to the right
+            # cells. Untrained at first; will train on first merge.
+            quantizer = faiss.IndexFlatIP(self.dimension)
+            self.live_index = faiss.IndexIVFFlat(
+                quantizer,
+                self.dimension,
+                self.config.faiss_ivf_nlist,
+                faiss.METRIC_INNER_PRODUCT,
+            )
+            logger.info(
+                f"Created new IVFFlat index "
+                f"(nlist={self.config.faiss_ivf_nlist}, "
+                f"untrained — will train on first merge)"
+            )
+        else:
+            # HNSW64: M=64, efConstruction=200 — the legacy default.
+            self.live_index = faiss.IndexHNSWFlat(self.dimension, 64, faiss.METRIC_INNER_PRODUCT)
+            self.live_index.hnsw.efConstruction = 200
+            logger.info("Created new HNSW64 index")
+
+        self._apply_ivf_runtime_params()
         self.live_ids = []
         self.live_ids_set = set()
         self.live_count = 0
-        
+
         # Ensure directories exist
         self.live_path.parent.mkdir(parents=True, exist_ok=True)
         self.staging_dir.mkdir(parents=True, exist_ok=True)
+
+    def _apply_ivf_runtime_params(self) -> None:
+        """Apply runtime tunables to IVF-family indexes after load/create.
+
+        nprobe is NOT serialized by faiss.write_index, so we must set it
+        every boot from config or search will use the default of 1 (terrible
+        recall). Safe no-op on non-IVF indexes.
+        """
+        try:
+            ivf = faiss.extract_index_ivf(self.live_index)
+        except Exception:
+            return  # not an IVF family index
+        if ivf is not None:
+            ivf.nprobe = max(1, int(self.config.faiss_ivf_nprobe))
+            logger.info(f"Set IVF nprobe={ivf.nprobe}")
+
+    def _ensure_ivf_trained(self) -> bool:
+        """Train an untrained IVF index if we have enough staging vectors.
+
+        FAISS requires ``nlist * ~8-30`` training points minimum. We use
+        ``nlist * 8`` as a soft floor; if staging is smaller we postpone
+        training until next merge. Returns True if the index is (now)
+        trained and safe to add to.
+
+        No-op on already-trained or non-IVF indexes.
+        """
+        try:
+            ivf = faiss.extract_index_ivf(self.live_index)
+        except Exception:
+            return True  # not IVF, no training needed
+        if ivf is None:
+            return True
+        if self.live_index.is_trained:
+            return True
+
+        min_train = ivf.nlist * 8
+        n_staging = len(self.staging_vectors)
+        if n_staging < min_train:
+            logger.warning(
+                f"IVF index untrained and staging has {n_staging} vectors "
+                f"(< {min_train} required). Postponing merge until enough "
+                f"training data accumulates. Or run the IVF migration script."
+            )
+            return False
+
+        # Train on the staging snapshot. faiss.train() uses the data only
+        # for k-means; doesn't add to the index.
+        train_array = np.array(self.staging_vectors, dtype=np.float32)
+        logger.info(f"Training IVF index on {len(train_array)} vectors (nlist={ivf.nlist})...")
+        t0 = time.time()
+        self.live_index.train(train_array)
+        logger.info(f"IVF training complete in {time.time() - t0:.1f}s.")
+        return True
 
     def contains(self, face_id: str) -> bool:
         """Return True if `face_id` is already in live or staging.
@@ -258,6 +350,15 @@ class BatchedFAISSIndex:
         """
         with self.merge_lock:
             if len(self.staging_vectors) == 0:
+                return
+
+            # IVF gate: if we have an IVFFlat index that's not trained yet,
+            # try to train it on the current staging snapshot. If staging is
+            # too small for a stable k-means, this returns False and we keep
+            # the staging buffer for the next merge cycle. The IVF migration
+            # script bypasses this entirely by training and persisting on
+            # disk so a fresh boot loads an already-trained index.
+            if not self._ensure_ivf_trained():
                 return
 
             staging_count = len(self.staging_vectors)

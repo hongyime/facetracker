@@ -19,9 +19,15 @@ os.environ["FACE_STORAGE_ROOT"] = tempfile.mkdtemp(prefix="smoke4_faiss_")
 # AliasChoices picks the FIRST matching env var; .env sets HOST_FACE_STORAGE
 # which would shadow our override. Override both to be explicit.
 os.environ["HOST_FACE_STORAGE"] = os.environ["FACE_STORAGE_ROOT"]
+# Force HNSW64 for this smoke regardless of the prod-side setting in .env.
+# Reason: this smoke seeds 5 faces; IVFFlat needs >= nlist*8 vectors before
+# it can train, so a small-batch drain test would silently no-op under
+# IVFFlat. HNSW64 has no training step and works at any size.
+os.environ["FAISS_INDEX_TYPE"] = "HNSW64"
 TMP_FAISS = os.environ["FACE_STORAGE_ROOT"]
 print(f"[ENV] FACE_STORAGE_ROOT={os.environ.get('FACE_STORAGE_ROOT')}")
 print(f"[ENV] HOST_FACE_STORAGE={os.environ.get('HOST_FACE_STORAGE')}")
+print(f"[ENV] FAISS_INDEX_TYPE={os.environ.get('FAISS_INDEX_TYPE')}")
 print(f"tmp_faiss_root={TMP_FAISS}")
 
 import numpy as np

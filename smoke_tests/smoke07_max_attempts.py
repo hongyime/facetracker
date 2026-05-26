@@ -16,6 +16,9 @@ import tempfile
 
 os.environ["FACE_STORAGE_ROOT"] = tempfile.mkdtemp(prefix="smoke7_faiss_")
 os.environ["HOST_FACE_STORAGE"] = os.environ["FACE_STORAGE_ROOT"]
+# Force HNSW64 — see smoke04 for rationale (IVFFlat needs nlist*8 training
+# vectors before it can be added to; this smoke uses too few rows for that).
+os.environ["FAISS_INDEX_TYPE"] = "HNSW64"
 TMP_FAISS = os.environ["FACE_STORAGE_ROOT"]
 
 from sqlalchemy import text
