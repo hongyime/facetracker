@@ -56,7 +56,7 @@ class Settings(BaseSettings):
 
     # FAISS outbox reaper (Phase 2 — outbox pattern)
     faiss_reaper_poll_ms: int = 500            # how often the reaper wakes
-    faiss_reaper_batch_size: int = 256         # rows claimed per cycle
+    faiss_reaper_batch_size: int = 2048        # rows claimed per cycle (was 256; bumped to amortize whole-index rewrite cost)
     faiss_reaper_stuck_timeout_s: int = 120    # reclaim 'merging' rows older than this
     faiss_reaper_max_attempts: int = 5         # park as 'failed' after this many attempts
     
