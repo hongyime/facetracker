@@ -26,6 +26,16 @@ services:
   api:
     build: .
     container_name: facetracker-api
+    # Inject tini as PID 1 so SIGTERM is forwarded to uvicorn and zombie
+    # children (ONNX runtime worker threads, watchdog observer, faiss reaper
+    # daemons) are reaped properly. Without this, `docker stop` can hang on a
+    # half-dead PID 1 and leave the container in a "zombie" state that only
+    # `docker rm -f` can clear.
+    init: true
+    # Bound graceful shutdown — if uvicorn + lifespan haven't exited within
+    # 30s, docker SIGKILLs. Plenty of time for clean shutdown of an idle
+    # worker; tight enough that a stuck inference can't wedge a redeploy.
+    stop_grace_period: 30s
     env_file:
       - .env
     environment:
@@ -69,6 +79,8 @@ services:
       context: ./operations-dashboard
       dockerfile: Dockerfile
     container_name: facetracker-dashboard
+    init: true
+    stop_grace_period: 10s
     ports:
       - "8701:8700"
     environment:

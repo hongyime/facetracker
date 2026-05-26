@@ -472,25 +472,62 @@ class PipelineProcessor:
         either nothing or everything. The outbox row is what makes the
         face eventually visible in FAISS — without it, the reaper has
         no work.
+
+        Handles three cases for the Image row:
+          1. No existing row for this file_path → INSERT new (most common).
+          2. Existing row with status='failed' (e.g. Phase C orphan-recovery
+             marked it failed because it had no faces, but the live scanner
+             has now actually examined it) → UPDATE in place to completed.
+          3. Existing row with status='completed' but the upstream file_hash
+             idempotency check missed it (e.g. file content changed but
+             path stayed the same) → UPDATE in place to refresh.
+
+        Cases 2/3 fix a real bug: scanner ingestion + orphan recovery used
+        to collide on `ix_images_file_path` UniqueViolation, killing the
+        worker mid-file and leaving Faces uncommitted.
         """
         try:
             stat = result.file_path.stat()
+            file_path_str = str(result.file_path)
 
-            image_record = Image(
-                file_path=str(result.file_path),
-                file_hash=result.file_hash,
-                file_size=stat.st_size,
-                file_mtime=stat.st_mtime,
-                width=result.width or None,
-                height=result.height or None,
-                status="completed",
-                face_count=result.faces_processed,
-                is_video=result.is_video,
-                video_frames=result.video_frames_processed
+            existing = (
+                session.query(Image)
+                .filter(Image.file_path == file_path_str)
+                .first()
             )
 
-            session.add(image_record)
-            session.flush()  # populate image_record.id
+            if existing is None:
+                image_record = Image(
+                    file_path=file_path_str,
+                    file_hash=result.file_hash,
+                    file_size=stat.st_size,
+                    file_mtime=stat.st_mtime,
+                    width=result.width or None,
+                    height=result.height or None,
+                    status="completed",
+                    face_count=result.faces_processed,
+                    is_video=result.is_video,
+                    video_frames=result.video_frames_processed,
+                    error_message=None,
+                )
+                session.add(image_record)
+                session.flush()  # populate image_record.id
+            else:
+                # In-place update. Clearing error_message is important — the
+                # row may have carried a stale "recovery: ..." note from
+                # Phase C of orphan recovery.
+                existing.file_hash = result.file_hash
+                existing.file_size = stat.st_size
+                existing.file_mtime = stat.st_mtime
+                existing.width = result.width or None
+                existing.height = result.height or None
+                existing.status = "completed"
+                existing.face_count = result.faces_processed
+                existing.is_video = result.is_video
+                existing.video_frames = result.video_frames_processed
+                existing.error_message = None
+                session.flush()
+                image_record = existing
 
             for face, emb in result.face_objects:
                 face.image_id = image_record.id
