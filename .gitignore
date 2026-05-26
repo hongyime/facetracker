@@ -12,3 +12,6 @@ build/
 .venv/
 venv/
 *.tmp
+
+# Node — keep dependencies out of git
+node_modules/
