@@ -7,7 +7,17 @@ export interface HealthStatus {
   updated_at: string;
 }
 
-export function useHealthWS(url: string = 'ws://localhost:8700/ws/health') {
+export function useHealthWS(url?: string) {
+  // Resolve the WS URL relative to the page origin so the same build works
+  // whether the dashboard is served from :8701 (compose host port), :8700
+  // (direct in-container), or any future port without rebuilding the
+  // frontend. Hard-coding ws://localhost:8700 used to break on :8701.
+  const resolvedUrl = url ?? (() => {
+    if (typeof window === 'undefined') return 'ws://localhost:8701/ws/health';
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${window.location.host}/ws/health`;
+  })();
+
   const [healthData, setHealthData] = useState<HealthStatus[]>([]);
   const [isConnected, setIsConnected] = useState(false);
 
@@ -17,7 +27,7 @@ export function useHealthWS(url: string = 'ws://localhost:8700/ws/health') {
     let backoff = 1000;
 
     const connect = () => {
-      ws = new WebSocket(url);
+      ws = new WebSocket(resolvedUrl);
 
       ws.onopen = () => {
         setIsConnected(true);
@@ -54,7 +64,7 @@ export function useHealthWS(url: string = 'ws://localhost:8700/ws/health') {
         ws.close();
       }
     };
-  }, [url]);
+  }, [resolvedUrl]);
 
   return { healthData, isConnected };
 }

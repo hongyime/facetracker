@@ -85,6 +85,13 @@ services:
       - "8701:8700"
     environment:
       - APP_ENV=production
+      # Talk to the facetracker api on the internal compose network. Using
+      # the service name 'api' (port 8000 inside the container — not the
+      # host-mapped 5454) keeps everything inside the docker bridge so
+      # CORS doesn't apply and we don't traverse the WSL2 NAT.
+      - FACETRACKER_API_URL=http://api:8000
+    depends_on:
+      - api
     restart: unless-stopped
 
 networks:
