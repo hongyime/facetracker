@@ -6,6 +6,8 @@ from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 import uuid
 
+from sqlalchemy.orm import Session
+
 from src.utils.logging import get_logger
 from src.readers.image_reader import ImageReader
 from src.readers.video_reader import VideoReader
@@ -15,6 +17,7 @@ from src.engine.quality import QualityScorer
 from src.pipeline.thumbnail import ThumbnailGenerator
 from src.storage.database import Database, Image, Face
 from src.storage.faiss_index import BatchedFAISSIndex
+from src.storage.outbox import enqueue_face
 from src.discovery.onedrive import OneDriveHandler
 from src.config import settings
 
@@ -59,7 +62,7 @@ class ProcessingResult:
         self.status: str = "pending"  # pending, processing, success, failed
         self.faces_detected: int = 0
         self.faces_processed: int = 0
-        self.face_objects: List[Face] = []
+        self.face_objects: List[Tuple[Face, np.ndarray]] = []
         self.error_message: Optional[str] = None
         self.processing_time: float = 0.0
         self.is_video: bool = False
@@ -88,7 +91,15 @@ class ProcessingResult:
 
 
 class PipelineProcessor:
-    """Orchestrate the complete face processing pipeline."""
+    """Orchestrate the complete face processing pipeline.
+
+    The pipeline does NOT touch FAISS directly. Each file produces a single
+    Postgres transaction containing: 1 Image row, N Face rows, and N
+    `faiss_outbox` rows. A separate FaissReaper thread drains the outbox
+    into FAISS asynchronously. This decouples ingest from FAISS write
+    latency and eliminates the "Postgres committed but FAISS missing"
+    failure window.
+    """
 
     def __init__(
         self,
@@ -102,8 +113,11 @@ class PipelineProcessor:
         Initialize pipeline processor.
 
         Args:
-            db: Database instance.
-            faiss_index: Batched FAISS index for embeddings.
+            db: Database (engine + SessionLocal factory). Pipeline opens a
+                fresh Session per file via `db.SessionLocal()`.
+            faiss_index: Batched FAISS index — held only for read-side
+                idempotency checks during enqueue. Writes go through the
+                outbox.
             thumbnail_cache_path: Base path for thumbnail storage.
             use_onedrive: Enable OneDrive handling.
             providers: ONNX runtime providers.
@@ -141,16 +155,35 @@ class PipelineProcessor:
             return False
         return True
 
-    def process_file(self, file_path: Path) -> ProcessingResult:
+    def process_file(self, file_path: Path, session: Optional[Session] = None) -> ProcessingResult:
         """
         Process a single image or video file.
 
+        The DB session is owned by the CALLER. Pass an open Session and the
+        pipeline will commit (or rollback) it before returning. If no
+        session is provided we open one ourselves — convenient for tests
+        and one-shot scripts, NOT for the indexing manager which should
+        own session lifecycle.
+
         Args:
             file_path: Path to file to process.
+            session: SQLAlchemy Session (caller-owned). If None, a session
+                is opened internally and closed in finally.
 
         Returns:
             ProcessingResult with all metadata and face records.
         """
+        owns_session = session is None
+        if owns_session:
+            session = self.db.SessionLocal()
+
+        try:
+            return self._process_file_impl(file_path, session)
+        finally:
+            if owns_session:
+                session.close()
+
+    def _process_file_impl(self, file_path: Path, session: Session) -> ProcessingResult:
         # STOP if storage root is missing (e.g. Y:\ disconnected)
         if not self._check_storage_alive():
             result = ProcessingResult()
@@ -161,13 +194,13 @@ class PipelineProcessor:
 
         import time
         start_time = time.time()
-        
+
         result = ProcessingResult()
         result.file_path = file_path
         result.status = "processing"
-        
+
         logger.info(f"Processing file: {file_path}")
-        
+
         onedrive_original_path = None
         should_revert = False
 
@@ -184,19 +217,21 @@ class PipelineProcessor:
                     logger.info(f"OneDrive placeholder downloaded: {file_path} -> {local_path}")
                     onedrive_original_path = str(file_path)
                 file_path = Path(local_path)
-            
+
             # Compute file hash
             from src.utils.hashing import compute_file_hash
             result.file_hash = compute_file_hash(file_path)
-            
-            # Check if already processed
-            existing = self.db.get_image_by_hash(result.file_hash)
+
+            # Check if already processed (uses caller's session)
+            existing = (
+                session.query(Image).filter(Image.file_hash == result.file_hash).first()
+            )
             if existing and existing.status == "completed":
                 logger.info(f"File already processed: {file_path}")
                 result.status = "success"
                 result.processing_time = time.time() - start_time
                 return result
-            
+
             # Determine file type and process
             if self.video_reader.can_read(file_path):
                 self._process_video(file_path, result)
@@ -205,7 +240,7 @@ class PipelineProcessor:
             else:
                 result.status = "failed"
                 result.error_message = f"Unsupported file type: {file_path.suffix}"
-                
+
         except Exception as e:
             logger.error(f"Processing failed for {file_path}: {e}")
             result.status = "failed"
@@ -216,20 +251,16 @@ class PipelineProcessor:
                 self.onedrive.revert_to_online_only(onedrive_original_path)
 
         result.processing_time = time.time() - start_time
-        
-        # Save image record to database
+
+        # Save image record (and outbox rows) atomically in caller's session
         if result.status == "success":
-            self._save_image_record(result)
-        
-        # Flush FAISS staging if needed
-        if self.faiss_index.needs_merge:
-            self.faiss_index.force_merge()
-        
+            self._save_image_record(session, result)
+
         logger.info(
             f"Completed processing {file_path}: "
             f"{result.faces_processed} faces in {result.processing_time:.2f}s"
         )
-        
+
         return result
 
     def _process_image(self, file_path: Path, result: ProcessingResult):
@@ -379,33 +410,40 @@ class PipelineProcessor:
         frame_number: int = 0,
         track_id: Optional[int] = None,
         video_path: Optional[Path] = None
-    ) -> Optional[Face]:
-        """Process a single face detection."""
+    ) -> Optional[Tuple[Face, np.ndarray]]:
+        """Process a single face detection.
+
+        Returns the unsaved Face object plus its embedding. The embedding
+        rides alongside until `_save_image_record` writes both the Face
+        row and the matching `faiss_outbox` row in one transaction. The
+        pipeline no longer calls `faiss_index.add()` directly — the
+        outbox reaper owns FAISS writes.
+        """
         try:
             if embedding is None:
                 logger.warning("No embedding provided for face")
                 return None
-            
+
             x1, y1, x2, y2 = bbox.astype(int)
-            
+
             # Generate unique ID for face
             face_id = uuid.uuid4().hex
-            
+
             # Generate thumbnail
             thumbnail_filename = f"{face_id}.jpg"
             thumbnail_rel_path = f"{thumbnail_filename[:2]}/{thumbnail_filename}"
             thumbnail_full_path = self.thumbnail_cache_path / thumbnail_rel_path
-            
+
             _, thumb_bytes = self.thumbnail_generator.generate_face_thumbnail(
                 image=image,
                 bbox=bbox,
                 output_path=thumbnail_full_path
             )
-            
-            # Create face object
+
+            # Create face object (not yet attached to session)
             face_obj = Face(
                 embedding_id=face_id,
-                embedding_vec=embedding.astype(np.float32), # Database model handles halfvec conversion if needed, or we keep as float32
+                embedding_vec=embedding.astype(np.float32),
                 quality_score=float(quality_score),
                 bbox_px_x1=int(x1),
                 bbox_px_y1=int(y1),
@@ -420,20 +458,22 @@ class PipelineProcessor:
                 video_path=str(video_path) if video_path else None,
                 thumbnail_path=thumbnail_rel_path
             )
-            
-            # Add to FAISS index staging
-            self.faiss_index.add(embedding, face_id)
-            
-            return face_obj
-            
+
+            return face_obj, embedding.astype(np.float32)
+
         except Exception as e:
             logger.error(f"Face processing failed: {e}")
             return None
 
-    def _save_image_record(self, result: ProcessingResult):
-        """Save image record to database."""
+    def _save_image_record(self, session: Session, result: ProcessingResult):
+        """Persist the image, faces, and outbox rows in a single transaction.
+
+        All three writes share one transaction so a crash anywhere leaves
+        either nothing or everything. The outbox row is what makes the
+        face eventually visible in FAISS — without it, the reaper has
+        no work.
+        """
         try:
-            # Get file stats
             stat = result.file_path.stat()
 
             image_record = Image(
@@ -448,19 +488,19 @@ class PipelineProcessor:
                 is_video=result.is_video,
                 video_frames=result.video_frames_processed
             )
-            
-            self.db.add_image(image_record)
-            
-            # Flush to get image_record.id
-            self.db.session.flush()
-            
-            # Add face records
-            for face in result.face_objects:
+
+            session.add(image_record)
+            session.flush()  # populate image_record.id
+
+            for face, emb in result.face_objects:
                 face.image_id = image_record.id
-                self.db.add_face(face)
-            
-            self.db.commit()
-            
+                session.add(face)
+                # Outbox row tied to the same Face — same TX boundary.
+                enqueue_face(session, face.embedding_id, emb)
+
+            session.commit()
+
         except Exception as e:
             logger.error(f"Failed to save image record: {e}")
-            self.db.rollback()
+            session.rollback()
+            raise

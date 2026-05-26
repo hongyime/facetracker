@@ -12,6 +12,7 @@ from src.discovery.scanner import DriveScanner, FileRecord
 from src.discovery.manifest import FileManifestManager
 from src.discovery.watcher import FileWatcher
 from src.pipeline.processor import PipelineProcessor
+from src.storage.database import Database
 from src.config import Settings
 
 logger = get_logger(__name__)
@@ -34,12 +35,14 @@ class IndexingManager:
         config: Settings,
         processor: PipelineProcessor,
         manifest: FileManifestManager,
-        watcher: FileWatcher
+        watcher: FileWatcher,
+        db: Database,
     ):
         self.config = config
         self.processor = processor
         self.manifest = manifest
         self.watcher = watcher
+        self.db = db
         self.scanner = DriveScanner(config)
         
         # Queues
@@ -190,7 +193,12 @@ class IndexingManager:
                 time.sleep(60)  # Wait before retry
                 
     def _worker_loop(self) -> None:
-        """Worker thread loop to process files from the queue."""
+        """Worker thread loop to process files from the queue.
+
+        Each file gets a fresh DB Session opened from the engine pool and
+        closed in finally. This is the per-file transaction boundary —
+        commit/rollback decisions live inside `processor.process_file`.
+        """
         while not self._stop_event.is_set():
             try:
                 # Get file from queue
@@ -198,12 +206,15 @@ class IndexingManager:
                     record = self.processing_queue.get(timeout=1)
                 except queue.Empty:
                     continue
-                    
+
                 self.current_file = record.path
-                
-                # Process file
-                result = self.processor.process_file(Path(record.path))
-                
+
+                session = self.db.SessionLocal()
+                try:
+                    result = self.processor.process_file(Path(record.path), session=session)
+                finally:
+                    session.close()
+
                 if result.status == "success":
                     self.files_processed += 1
                     # Update manifest
@@ -218,10 +229,10 @@ class IndexingManager:
                 else:
                     self.files_failed += 1
                     logger.warning(f"Failed to process {record.path}: {result.error_message}")
-                    
+
                 self.processing_queue.task_done()
                 self.current_file = None
-                
+
             except Exception as e:
                 logger.error(f"Error in worker thread: {e}")
                 time.sleep(1)
