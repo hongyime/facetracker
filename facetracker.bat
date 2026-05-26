@@ -17,10 +17,13 @@ REM Show current container state at the top so the right action is obvious.
 REM `docker ps` returns empty if the container isn't running; fall back to "stopped".
 set "API_STATUS=stopped"
 set "DB_STATUS=stopped"
+set "DASH_STATUS=stopped"
 for /f "usebackq delims=" %%S in (`docker ps --filter "name=facetracker-api" --format "{{.Status}}" 2^>nul`) do set "API_STATUS=%%S"
 for /f "usebackq delims=" %%S in (`docker ps --filter "name=facetracker-postgres" --format "{{.Status}}" 2^>nul`) do set "DB_STATUS=%%S"
-echo   api      : !API_STATUS!
-echo   postgres : !DB_STATUS!
+for /f "usebackq delims=" %%S in (`docker ps --filter "name=facetracker-dashboard" --format "{{.Status}}" 2^>nul`) do set "DASH_STATUS=%%S"
+echo   api       : !API_STATUS!
+echo   postgres  : !DB_STATUS!
+echo   dashboard : !DASH_STATUS!
 echo.
 echo ------------------------------------------------------------
 echo   START / STOP
@@ -44,6 +47,13 @@ echo ------------------------------------------------------------
 echo   9.  Pause indexer (stop api, keep postgres)
 echo  10.  Resume indexer (start api)
 echo.
+echo ------------------------------------------------------------
+echo   DASHBOARD (operations UI on http://localhost:8701)
+echo ------------------------------------------------------------
+echo  11.  Start dashboard
+echo  12.  Stop dashboard
+echo  13.  Open dashboard in browser
+echo.
 echo   0.  Exit
 echo.
 set /p CHOICE=Enter choice: 
@@ -58,6 +68,9 @@ if "%CHOICE%"=="7"  goto outbox
 if "%CHOICE%"=="8"  goto stats
 if "%CHOICE%"=="9"  goto pause_idx
 if "%CHOICE%"=="10" goto resume_idx
+if "%CHOICE%"=="11" goto dash_start
+if "%CHOICE%"=="12" goto dash_stop
+if "%CHOICE%"=="13" goto dash_open
 if "%CHOICE%"=="0"  goto end
 goto menu
 
@@ -124,6 +137,25 @@ goto pause_return
 echo.
 echo [resume] starting api...
 docker compose start api
+goto pause_return
+
+:dash_start
+echo.
+echo [dash] starting dashboard (will build first run; takes 2-3 min)...
+docker compose up -d dashboard
+echo [dash] open http://localhost:8701
+goto pause_return
+
+:dash_stop
+echo.
+echo [dash] stopping dashboard (api + postgres unaffected)...
+docker compose stop dashboard
+goto pause_return
+
+:dash_open
+echo.
+echo [dash] opening browser...
+start "" "http://localhost:8701"
 goto pause_return
 
 
