@@ -88,8 +88,8 @@ goto pause_return
 
 :health
 echo.
-echo [health] probing http://localhost:5151/health ...
-curl -fsS http://localhost:5151/health
+echo [health] probing http://localhost:5454/health ...
+curl -fsS http://localhost:5454/health
 echo.
 goto pause_return
 

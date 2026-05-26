@@ -47,7 +47,7 @@ services:
       # - Z:/:/mnt/z:ro
       - Y:/:/mnt/y:ro
     ports:
-      - "${DASHBOARD_PORT:-5151}:8000"
+      - "${DASHBOARD_PORT:-5454}:8000"
     depends_on:
       postgres:
         condition: service_healthy
