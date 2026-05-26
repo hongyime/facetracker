@@ -81,7 +81,18 @@ class IndexingManager:
             t.daemon = True
             t.start()
             self._worker_threads.append(t)
-            
+
+        # Recovery: re-queue any orphaned pending rows from prior incomplete runs.
+        # Runs in its own thread so app startup is not blocked by a long DB
+        # query against millions of rows. Workers will start draining the queue
+        # immediately as recovery enqueues find them.
+        recovery_thread = threading.Thread(
+            target=self._recover_pending_images,
+            name="PendingRecoveryThread",
+        )
+        recovery_thread.daemon = True
+        recovery_thread.start()
+
         # Start scan thread
         self._scan_thread = threading.Thread(target=self._scan_loop, name="ScannerThread")
         self._scan_thread.daemon = True
@@ -192,6 +203,156 @@ class IndexingManager:
                 self.is_scanning = False
                 time.sleep(60)  # Wait before retry
                 
+    def _recover_pending_images(self) -> None:
+        """One-shot recovery for orphaned `images.status='pending'` rows.
+
+        Three phases, all driven off SQL — does NOT re-run the detection
+        pipeline against files that already have face rows. That avoids
+        unique-violations on file_path and double-detection of the same image.
+
+        Phase A (flip-to-completed):
+            Pending rows with face_count > 0 are partial commits from a
+            pre-P1 (caller-owned-Session) era — detection ran, faces were
+            written, but the Image.status flip never landed. They are
+            already ~99% done. Flip them to 'completed' so they leave
+            the pending bucket.
+
+        Phase B (outbox backfill):
+            For every face row whose embedding_id is not yet present in
+            the FAISS live_ids set, enqueue an outbox row so the reaper
+            adds it to the index. This covers both the rows we just
+            flipped in Phase A AND any pre-existing 'completed' rows
+            whose embeddings were never persisted to FAISS.
+
+        Phase C (mark-failed for empty pending):
+            Pending rows with face_count=0 had no faces detected (legit)
+            OR died before detection (illegit). Either way, marking them
+            'failed' clears the pending bucket; the scanner will re-pick
+            up any file that's still on disk on the next walk.
+
+        The recovery only runs once per process start and is idempotent
+        across restarts: a row that was flipped to completed last time
+        won't be touched again.
+        """
+        from sqlalchemy import text
+
+        log_prefix = "[recovery]"
+        try:
+            session = self.db.SessionLocal()
+        except Exception as e:
+            logger.error(f"{log_prefix} cannot open recovery session: {e}")
+            return
+
+        try:
+            # --- Phase A: flip partial-commit pending rows to completed.
+            try:
+                with self.db.engine.begin() as conn:
+                    res = conn.execute(
+                        text(
+                            "UPDATE images SET status='completed' "
+                            " WHERE status='pending' AND face_count > 0"
+                        )
+                    )
+                    flipped = res.rowcount or 0
+                logger.info(f"{log_prefix} phaseA: flipped {flipped} pending->completed (had faces)")
+            except Exception as e:
+                logger.error(f"{log_prefix} phaseA failed: {e}")
+                flipped = 0
+
+            # --- Phase B: backfill outbox for faces missing from FAISS.
+            # Use ORM to leverage pgvector type adapter; raw SQL on
+            # `embedding_vec` would return text needing manual parsing.
+            try:
+                import numpy as np
+
+                from src.storage.database import Face
+                from src.storage.outbox import serialize_embedding
+
+                live = set()
+                if (
+                    self.processor is not None
+                    and getattr(self.processor, "faiss_index", None) is not None
+                    and hasattr(self.processor.faiss_index, "live_ids_set")
+                ):
+                    live = set(self.processor.faiss_index.live_ids_set)
+
+                BATCH = 500
+                last_id = 0
+                enqueued = 0
+                while not self._stop_event.is_set():
+                    rows = (
+                        session.query(Face.id, Face.embedding_id, Face.embedding_vec)
+                        .filter(Face.id > last_id)
+                        .filter(Face.embedding_id.isnot(None))
+                        .filter(Face.embedding_vec.isnot(None))
+                        .order_by(Face.id)
+                        .limit(BATCH)
+                        .all()
+                    )
+                    if not rows:
+                        break
+                    last_id = rows[-1].id
+
+                    # Bulk-insert outbox rows; ON CONFLICT DO NOTHING covers
+                    # the case where Phase B is re-run.
+                    with self.db.engine.begin() as conn:
+                        for r in rows:
+                            if r.embedding_id in live:
+                                continue
+                            try:
+                                vec = np.asarray(r.embedding_vec, dtype=np.float32)
+                                if vec.shape != (512,):
+                                    logger.warning(
+                                        f"{log_prefix} phaseB skip face_id={r.embedding_id}: "
+                                        f"unexpected shape {vec.shape}"
+                                    )
+                                    continue
+                                emb_bytes = serialize_embedding(vec)
+                                conn.execute(
+                                    text(
+                                        "INSERT INTO faiss_outbox "
+                                        "  (face_id, embedding, status, attempts, created_at) "
+                                        "VALUES (:fid, :emb, 'pending', 0, NOW()) "
+                                        "ON CONFLICT (face_id) DO NOTHING"
+                                    ),
+                                    {"fid": r.embedding_id, "emb": emb_bytes},
+                                )
+                                enqueued += 1
+                            except Exception as ie:
+                                logger.warning(
+                                    f"{log_prefix} phaseB skip face_id={r.embedding_id}: {ie}"
+                                )
+
+                    # Periodic progress for the long backfill.
+                    if last_id % (BATCH * 10) < BATCH:
+                        logger.info(f"{log_prefix} phaseB progress: enqueued={enqueued}")
+
+                logger.info(f"{log_prefix} phaseB: enqueued {enqueued} outbox rows")
+            except Exception as e:
+                logger.error(f"{log_prefix} phaseB failed: {e}")
+
+            # --- Phase C: mark empty pending rows failed so they leave the bucket.
+            try:
+                with self.db.engine.begin() as conn:
+                    res = conn.execute(
+                        text(
+                            "UPDATE images "
+                            "   SET status='failed', "
+                            "       error_message='recovery: pending with no faces, never started' "
+                            " WHERE status='pending' AND face_count = 0"
+                        )
+                    )
+                    cleared = res.rowcount or 0
+                logger.info(f"{log_prefix} phaseC: marked {cleared} empty pending rows failed")
+            except Exception as e:
+                logger.error(f"{log_prefix} phaseC failed: {e}")
+
+            logger.info(f"{log_prefix} done")
+        except Exception as e:
+            logger.error(f"{log_prefix} aborted: {e}")
+        finally:
+            session.close()
+
     def _worker_loop(self) -> None:
         """Worker thread loop to process files from the queue.
 

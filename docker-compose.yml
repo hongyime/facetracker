@@ -40,11 +40,10 @@ services:
       - ${APP_ROOT:-C:/facetracker}/src:/app/src:ro
       - model_cache:/root/.insightface/models
       # Physical drive mounts for scanning.
-      # Conservative first-run scope: only Y: (face storage drive).
-      # Re-enable C: / Z: once you trust the pipeline and have the patience
-      # for a multi-drive full crawl.
-      # - C:/:/mnt/c:ro
-      # - Z:/:/mnt/z:ro
+      # Full scope: all three drives. EXCLUDE_PATHS in .env still gates
+      # what the scanner descends into (system dirs, plex caches, etc).
+      - C:/:/mnt/c:ro
+      - Z:/:/mnt/z:ro
       - Y:/:/mnt/y:ro
     ports:
       - "${DASHBOARD_PORT:-5454}:8000"
