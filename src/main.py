@@ -9,6 +9,7 @@ from src.config import settings, get_settings
 from src.utils.logging import setup_logging, get_logger
 from src.storage.database import get_database, Base
 from src.storage.faiss_index import BatchedFAISSIndex
+from src.storage.outbox import FaissReaper, FaissOutbox  # noqa: F401  (FaissOutbox import ensures table is registered with Base)
 from src.pipeline.processor import PipelineProcessor
 from src.discovery.manifest import FileManifestManager
 from src.discovery.watcher import FileWatcher
@@ -18,61 +19,89 @@ from pathlib import Path
 
 logger = get_logger(__name__)
 
-# Global instances
-indexing_manager = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager for startup/shutdown."""
-    global indexing_manager
-    
+    """Application lifespan manager for startup/shutdown.
+
+    Lifecycle order matters:
+
+      startup:  db -> faiss -> reaper -> processor -> indexing manager
+      shutdown: indexing manager -> reaper -> db
+
+    The reaper is started BEFORE the indexing manager so any face the
+    pipeline writes is drained immediately. It is stopped AFTER the
+    indexing manager so the last few outbox rows the pipeline emitted
+    are flushed before we exit.
+    """
     # Startup
     logger.info("Starting Face Tracker API...")
-    
-    # Setup logging
+
     setup_logging(settings.log_level)
-    
-    # Initialize database connection
+
+    # 1. Database (engine + SessionLocal)
     db = get_database(settings.database_url)
-    db.create_tables()
+    db.create_tables()  # creates faiss_outbox via the FaissOutbox import above
     logger.info("Database connected")
-    
-    # Initialize FAISS index
+
+    # 2. FAISS index (in-memory + on-disk)
     faiss_index = BatchedFAISSIndex(settings)
-    
-    # Initialize processor
+
+    # 3. Outbox reaper — runs whenever the API is up, regardless of whether
+    #    the indexing manager is actively scanning. Keeps recently-ingested
+    #    faces searchable within `faiss_reaper_poll_ms` of their DB commit.
+    reaper = FaissReaper(
+        database=db,
+        faiss_index=faiss_index,
+        poll_interval_ms=settings.faiss_reaper_poll_ms,
+        batch_size=settings.faiss_reaper_batch_size,
+        stuck_timeout_s=settings.faiss_reaper_stuck_timeout_s,
+        max_attempts=settings.faiss_reaper_max_attempts,
+    )
+    reaper.start()
+    app.state.faiss_reaper = reaper
+
+    # 4. Pipeline processor — does NOT touch FAISS directly anymore;
+    #    writes go through the outbox.
     processor = PipelineProcessor(
         db=db,
         faiss_index=faiss_index,
         thumbnail_cache_path=Path(settings.thumbnail_cache_path)
     )
-    
-    # Initialize discovery components
+
+    # 5. Discovery + indexing manager (workers open per-file Sessions)
     manifest = FileManifestManager(settings)
     watcher = FileWatcher(settings)
-    
-    # Initialize and start indexing manager
     app.state.indexing_manager = IndexingManager(
         config=settings,
         processor=processor,
         manifest=manifest,
-        watcher=watcher
+        watcher=watcher,
+        db=db,
     )
     app.state.indexing_manager.start()
-    
+
     logger.info("Face Tracker API started successfully")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down Face Tracker API...")
+
     mgr = getattr(app.state, "indexing_manager", None)
     if mgr is not None:
         try:
             mgr.stop()
         except Exception as e:
             logger.error(f"Error stopping indexing manager: {e}")
-        
+
+    rpr = getattr(app.state, "faiss_reaper", None)
+    if rpr is not None:
+        try:
+            rpr.stop()
+        except Exception as e:
+            logger.error(f"Error stopping FAISS reaper: {e}")
+
     db.close()
     logger.info("Database connection closed")
 

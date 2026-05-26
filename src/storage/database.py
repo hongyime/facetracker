@@ -204,20 +204,26 @@ class OneDriveFile(Base):
 
 # Database connection management
 class Database:
-    """Database connection and session manager.
+    """Database engine + Session factory.
 
-    NOTE: This class still exists for the indexing pipeline and the FastAPI
-    lifespan, which use the long-lived `session` property. For request-scoped
-    work in HTTP routes, prefer `get_db_session()` below — it yields a fresh
-    Session per request and closes it in finally.
+    The previous version of this class also exposed a long-lived `session`
+    property plus convenience wrappers (`add_image`, `add_face`, `commit`,
+    `rollback`). Those are gone — they were a singleton Session shared
+    across callers, which is unsafe under any concurrency. Today this
+    class owns the engine and the SessionLocal factory only. Callers
+    (HTTP routes, the indexing pipeline) are responsible for opening a
+    Session, working with it, and closing it.
+
+    HTTP routes use `get_db_session()` below for FastAPI Depends().
+    The indexing pipeline opens one Session per file via
+    `db.SessionLocal()` and commits or rolls back per file.
     """
-    
+
     def __init__(self, database_url: str):
         self.database_url = database_url
         self.engine = None
         self.SessionLocal = None
-        self._session = None
-    
+
     def connect(self) -> None:
         """Create database engine and session factory."""
         self.engine = create_engine(
@@ -229,7 +235,7 @@ class Database:
         self.SessionLocal = sessionmaker(
             autocommit=False, autoflush=False, bind=self.engine
         )
-    
+
     def create_tables(self) -> None:
         """Create all tables in the database."""
         if self.engine:
@@ -237,48 +243,17 @@ class Database:
                 conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
                 conn.commit()
             Base.metadata.create_all(bind=self.engine)
-    
+
     def get_session(self):
-        """Get a database session."""
+        """Open a new Session. Caller owns the lifecycle (close in finally)."""
         if not self.SessionLocal:
             raise RuntimeError("Database not connected. Call connect() first.")
         return self.SessionLocal()
-    
+
     def close(self) -> None:
-        """Close database connection."""
+        """Dispose engine. Closes all pooled connections."""
         if self.engine:
             self.engine.dispose()
-
-    @property
-    def session(self):
-        """Internal session for direct calls."""
-        if self._session is None:
-            self._session = self.get_session()
-        return self._session
-
-    def get_image_by_hash(self, file_hash: str) -> Optional[Image]:
-        """Get image by file hash."""
-        return self.session.query(Image).filter(Image.file_hash == file_hash).first()
-
-    def add_image(self, image: Image) -> None:
-        """Add image to session."""
-        self.session.add(image)
-
-    def add_face(self, face: Face) -> None:
-        """Add face to session."""
-        self.session.add(face)
-
-    def commit(self) -> None:
-        """Commit current transaction."""
-        try:
-            self.session.commit()
-        except Exception:
-            self.session.rollback()
-            raise
-
-    def rollback(self) -> None:
-        """Rollback current transaction."""
-        self.session.rollback()
 
 
 # --- Module-level engine cache ------------------------------------------------

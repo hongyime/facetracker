@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     faiss_staging_size: int = 10000
     faiss_merge_timeout: int = 300
     faiss_index_type: str = "HNSW64"
+
+    # FAISS outbox reaper (Phase 2 — outbox pattern)
+    faiss_reaper_poll_ms: int = 500            # how often the reaper wakes
+    faiss_reaper_batch_size: int = 256         # rows claimed per cycle
+    faiss_reaper_stuck_timeout_s: int = 120    # reclaim 'merging' rows older than this
+    faiss_reaper_max_attempts: int = 5         # park as 'failed' after this many attempts
     
     # OneDrive
     onedrive_enabled: bool = True

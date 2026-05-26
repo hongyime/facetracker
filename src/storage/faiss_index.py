@@ -36,6 +36,11 @@ class BatchedFAISSIndex:
         # Live index (searchable)
         self.live_index: Optional[faiss.Index] = None
         self.live_ids: List[str] = []
+        # Membership set kept in lockstep with live_ids and staging_ids so the
+        # outbox reaper can ask `contains(face_id)` cheaply when retrying a
+        # crashed merge. FAISS HNSW has no delete; the only correctness
+        # guarantee against duplicate vectors on retry is this dedup check.
+        self.live_ids_set: set = set()
         self.live_count = 0
         
         # Staging buffer
@@ -85,9 +90,11 @@ class BatchedFAISSIndex:
                             f"but only {len(self.live_ids)} ids — extra vectors will "
                             f"be unreachable. Consider rebuilding the index."
                         )
+                    self.live_ids_set = set(self.live_ids)
                 else:
                     logger.warning(f"No IDs file found at {self.ids_path}, live_ids will be empty")
                     self.live_ids = []
+                    self.live_ids_set = set()
             except Exception as e:
                 logger.error(f"Failed to load existing index: {e}. Creating new index.")
                 self._create_new_index()
@@ -100,22 +107,41 @@ class BatchedFAISSIndex:
         self.live_index = faiss.IndexHNSWFlat(self.dimension, 64, faiss.METRIC_INNER_PRODUCT)
         self.live_index.hnsw.efConstruction = 200
         self.live_ids = []
+        self.live_ids_set = set()
         self.live_count = 0
         
         # Ensure directories exist
         self.live_path.parent.mkdir(parents=True, exist_ok=True)
         self.staging_dir.mkdir(parents=True, exist_ok=True)
+
+    def contains(self, face_id: str) -> bool:
+        """Return True if `face_id` is already in live or staging.
+
+        Used by the outbox reaper to dedup retries: if a previous merge
+        crashed after writing FAISS but before marking outbox rows
+        committed, the next reaper attempt would otherwise insert
+        duplicate vectors. FAISS HNSW has no delete — dedup at insert
+        time is the only safety net.
+        """
+        with self.merge_lock:
+            if face_id in self.live_ids_set:
+                return True
+            # staging_ids is small relative to live; linear scan is fine
+            return face_id in self.staging_ids
     
     def add(self, embedding: np.ndarray, face_id: str) -> int:
         """
         Add an embedding to the staging buffer.
+
+        Idempotent: if `face_id` is already in live or staging, this is
+        a no-op. The reaper relies on this when retrying a crashed merge.
 
         Args:
             embedding: 512-d numpy array (float32)
             face_id: Unique identifier for the face
 
         Returns:
-            Position in staging buffer
+            Position in staging buffer (or -1 if already present)
         """
         # Normalize embedding for cosine similarity
         embedding = embedding.astype(np.float32)
@@ -125,9 +151,10 @@ class BatchedFAISSIndex:
         embedding = embedding.flatten()
 
         with self.merge_lock:
+            if face_id in self.live_ids_set or face_id in self.staging_ids:
+                return -1
             self.staging_vectors.append(embedding)
             self.staging_ids.append(face_id)
-
             count = len(self.staging_vectors)
             should_merge = count >= self.staging_size
 
@@ -145,21 +172,28 @@ class BatchedFAISSIndex:
         """
         Add multiple embeddings to the staging buffer.
 
+        Idempotent per face_id: duplicates of already-present IDs are
+        silently dropped (with their corresponding rows in `embeddings`).
+
         Args:
             embeddings: N x 512 numpy array
             face_ids: List of face IDs
 
         Returns:
-            Number of embeddings added
+            Number of NEW embeddings added (excluding dedup drops)
         """
         # Normalize embeddings
         embeddings = embeddings.astype(np.float32)
         faiss.normalize_L2(embeddings)
 
+        added = 0
         with self.merge_lock:
-            for i, emb in enumerate(embeddings):
-                self.staging_vectors.append(emb)
-                self.staging_ids.append(face_ids[i])
+            for i, fid in enumerate(face_ids):
+                if fid in self.live_ids_set or fid in self.staging_ids:
+                    continue
+                self.staging_vectors.append(embeddings[i])
+                self.staging_ids.append(fid)
+                added += 1
 
             count = len(self.staging_vectors)
             should_merge = count >= self.staging_size
@@ -167,7 +201,7 @@ class BatchedFAISSIndex:
         if should_merge:
             self._merge_staging_to_live()
 
-        return len(embeddings)
+        return added
 
     def search(self, embedding: np.ndarray, k: int = 100) -> List[Tuple[str, float]]:
         """
@@ -269,6 +303,7 @@ class BatchedFAISSIndex:
 
             # Both saves succeeded — publish.
             self.live_ids = new_live_ids
+            self.live_ids_set.update(staging_ids_snapshot)
             self.live_count = new_live_count
             self.staging_vectors.clear()
             self.staging_ids.clear()
@@ -300,17 +335,26 @@ class BatchedFAISSIndex:
         self._save_ids_atomic(self.live_ids)
 
     def _save_ids_atomic(self, ids_to_save) -> None:
-        """Save the given IDs list to disk via .tmp + atomic rename."""
+        """Save the given IDs list to disk via .tmp.npy + atomic rename.
+
+        ids_path is `<base>.ids.npy`. Bug history: previous impl built temp
+        path via `with_suffix('.npy.tmp')` which dropped the `.ids` segment
+        AND ended in `.tmp` (not `.npy`), so np.save auto-appended `.npy`
+        producing `<base>.npy.tmp.npy` while we tried to rename `<base>.npy.tmp`
+        — FileNotFoundError every merge, FAISS persistence permanently broken.
+
+        Fix: write to a sibling that already ends in `.npy` so np.save is a
+        no-op on the suffix, then atomic rename onto the final ids_path.
+        """
         if not ids_to_save:
             return
-        
-        # Strip existing extension and add new ones
-        base_path = self.ids_path.with_suffix('')
-        temp_path = base_path.with_suffix('.npy.tmp')
-        
+
+        # Sibling temp path with `.tmp.npy` suffix (np.save sees `.npy`, no append).
+        temp_path = self.ids_path.with_name(self.ids_path.name + ".tmp.npy")
+
         try:
             np.save(str(temp_path), np.array(ids_to_save, dtype=object), allow_pickle=True)
-            # Atomic rename
+            # Atomic rename onto the final path. Same filesystem -> atomic on POSIX.
             temp_path.replace(self.ids_path)
         except Exception as e:
             logger.error(f"Error saving FAISS IDs: {e}")
