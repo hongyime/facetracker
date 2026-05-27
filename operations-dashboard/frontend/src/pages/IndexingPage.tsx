@@ -28,6 +28,15 @@ export default function IndexingPage() {
     refetchInterval: 2000,
   });
 
+  const { data: onedrive } = useQuery({
+    queryKey: ['onedrive-stats'],
+    queryFn: async () => {
+      const res = await axios.get(`${API_BASE}/stats/onedrive`);
+      return res.data;
+    },
+    refetchInterval: 60000,
+  });
+
   const progressPercent = progress?.progress_percent !== undefined ? progress.progress_percent : 0;
 
   return (
@@ -37,6 +46,33 @@ export default function IndexingPage() {
         subtitle="Monitor drive scans and real-time processing pipeline."
         onRefresh={() => window.location.reload()}
       />
+
+      {onedrive?.scanning_disabled && (
+        <div className="mb-4 p-3 rounded border border-yellow-700 bg-yellow-900/20 text-yellow-200 text-sm">
+          <div className="font-medium mb-1">
+            ⚠ OneDrive scanning disabled — {onedrive.ingested_count} files
+            already ingested, but new OneDrive photos are NOT being scanned.
+          </div>
+          <div className="text-xs text-yellow-300/80">
+            Safety guard against C: drive bloat from Files-On-Demand
+            hydration. Build the host-side sidecar to re-enable safely. See{' '}
+            <code className="font-mono">docs/onedrive-sidecar-plan.md</code>.
+          </div>
+        </div>
+      )}
+      {onedrive && !onedrive.scanning_disabled && (
+        <div className="mb-4 p-3 rounded border border-red-700 bg-red-900/20 text-red-200 text-sm">
+          <div className="font-medium mb-1">
+            ⚠⚠ OneDrive scanning is ENABLED without sidecar.
+          </div>
+          <div className="text-xs text-red-300/80">
+            A full scan could hydrate hundreds of GB onto C:. Add the
+            OneDrive root to <code className="font-mono">EXCLUDE_PATHS</code>{' '}
+            in <code className="font-mono">.env</code> until the sidecar
+            is built.
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-12 gap-3 mb-6">
         <div className="col-span-3">

@@ -54,12 +54,54 @@ async def get_scan_progress(request: Request) -> Dict[str, Any]:
     }
 
 @router.get("/onedrive")
-async def get_onedrive_stats() -> Dict[str, Any]:
-    """Get OneDrive-specific statistics.
+async def get_onedrive_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """OneDrive ingestion status + reminder banner.
 
-    NOT IMPLEMENTED — returns HTTP 501 rather than fabricated zeros.
+    Reports:
+    - ingested: files already in DB whose path looks like OneDrive
+    - excluded: whether OneDrive paths are currently in EXCLUDE_PATHS
+                (when True, NEW OneDrive files are not being scanned;
+                this is the safe default until the host-side sidecar
+                from docs/onedrive-sidecar-plan.md is built)
+
+    Dashboard surfaces this as a banner so we don't forget the gap.
     """
-    raise HTTPException(status_code=501, detail="stats.onedrive is not implemented yet")
+    from sqlalchemy import or_
+
+    ingested = db.query(func.count(Image.id)).filter(
+        or_(
+            Image.file_path.like("%/OneDrive/%"),
+            Image.file_path.like("%/OneDrive - %"),
+        )
+    ).scalar() or 0
+
+    # Check whether OneDrive root is currently in EXCLUDE_PATHS.
+    # A future scan would skip OneDrive entirely if any of these are present.
+    excludes = list(settings.exclude_paths or [])
+    onedrive_excluded = any(
+        ex.endswith("/OneDrive") or "/OneDrive" in ex and not ex.endswith("/OneDrive/Caches")
+        for ex in excludes
+    )
+    onedrive_root_excluded = any(
+        ex.rstrip("/").endswith("/OneDrive") for ex in excludes
+    )
+
+    return {
+        "ingested_count": int(ingested),
+        "onedrive_root_excluded": bool(onedrive_root_excluded),
+        "scanning_disabled": bool(onedrive_root_excluded),
+        "sidecar_built": False,  # flip to True when sidecar ships
+        "message": (
+            "OneDrive scanning is disabled to prevent C: drive bloat from "
+            "Files-On-Demand hydration. New OneDrive photos will NOT be "
+            "ingested until the host-side sidecar is built. "
+            "See docs/onedrive-sidecar-plan.md."
+        ) if onedrive_root_excluded else (
+            "WARNING: OneDrive scanning is enabled. A full scan could "
+            "trigger Files-On-Demand hydration and bloat C:. "
+            "See docs/onedrive-sidecar-plan.md."
+        ),
+    }
 
 @router.get("/recent-activity")
 async def get_recent_activity(limit: int = 50) -> Dict[str, Any]:
