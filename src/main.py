@@ -39,6 +39,70 @@ async def lifespan(app: FastAPI):
 
     setup_logging(settings.log_level)
 
+    # 0. OneDrive safety check — refuse to boot if a scan root contains a
+    #    OneDrive cache without that path being EXCLUDED. Reads through the
+    #    Docker NTFS pass-through don't currently trigger Files-On-Demand
+    #    dehydration (verified empirically), but we don't trust that to hold
+    #    forever. Without this guard, a future scan could quietly hydrate the
+    #    entire OneDrive library onto C:, blowing out local disk. The proper
+    #    long-term fix is the host-side sidecar — see docs/onedrive-sidecar-plan.md.
+    #
+    #    Disable with FACETRACKER_ALLOW_ONEDRIVE_SCAN=1 only if you've read
+    #    that doc and know what you're signing up for.
+    import os as _os
+    _allow_onedrive = _os.environ.get("FACETRACKER_ALLOW_ONEDRIVE_SCAN", "").strip() == "1"
+    _onedrive_markers = ("OneDrive", "onedrive")
+    _scan_roots = [getattr(d, "path", "") for d in (settings.drive_sources or [])]
+    _excludes = list(settings.exclude_paths or [])
+    _unsafe = []
+    for root in _scan_roots:
+        # walk root one level deep looking for OneDrive subdirs
+        try:
+            if not _os.path.isdir(root):
+                continue
+            for entry in _os.listdir(root):
+                full = _os.path.join(root, entry)
+                if not _os.path.isdir(full):
+                    # also recurse one more level for /mnt/c/Users/<user>/OneDrive
+                    continue
+                if any(m in entry for m in _onedrive_markers):
+                    if not any(full.startswith(ex) or ex.startswith(full) for ex in _excludes):
+                        _unsafe.append(full)
+                # check Users subdirs explicitly
+                if entry == "Users":
+                    try:
+                        for user in _os.listdir(full):
+                            udir = _os.path.join(full, user)
+                            if not _os.path.isdir(udir):
+                                continue
+                            for child in _os.listdir(udir):
+                                cfull = _os.path.join(udir, child)
+                                if _os.path.isdir(cfull) and any(m in child for m in _onedrive_markers):
+                                    if not any(cfull.startswith(ex) or ex.startswith(cfull) for ex in _excludes):
+                                        _unsafe.append(cfull)
+                    except (PermissionError, OSError):
+                        pass
+        except (PermissionError, OSError):
+            continue
+    if _unsafe and not _allow_onedrive:
+        msg = (
+            "REFUSING TO START: scan roots contain OneDrive directories that are not in EXCLUDE_PATHS:\n  - "
+            + "\n  - ".join(sorted(set(_unsafe)))
+            + "\nA full scan could trigger Files-On-Demand dehydration and bloat C:.\n"
+            + "Fix one of:\n"
+            + "  (a) Add the path(s) above to EXCLUDE_PATHS in .env and restart, OR\n"
+            + "  (b) Set FACETRACKER_ALLOW_ONEDRIVE_SCAN=1 if you've read docs/onedrive-sidecar-plan.md\n"
+            + "      and accept the risk (NOT recommended without the sidecar)."
+        )
+        logger.error(msg)
+        raise RuntimeError("OneDrive scan-safety check failed; see log above.")
+    if _unsafe and _allow_onedrive:
+        logger.warning(
+            f"OneDrive paths under scan roots NOT excluded: {sorted(set(_unsafe))}. "
+            "Override active via FACETRACKER_ALLOW_ONEDRIVE_SCAN=1. "
+            "If you see C: drive bloat, abort scan and read docs/onedrive-sidecar-plan.md."
+        )
+
     # 1. Database (engine + SessionLocal)
     db = get_database(settings.database_url)
     db.create_tables()  # creates faiss_outbox via the FaissOutbox import above
