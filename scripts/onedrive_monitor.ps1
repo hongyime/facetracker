@@ -1,13 +1,18 @@
 # Audit OneDrive ingestion footprint on the local C: drive.
 #
-# Background: facetracker runs in a Linux container, which means the
-# Windows-only OneDrive handler (fsutil / attrib / Get-Item) never executes.
-# Files at C:\Users\<user>\OneDrive are read through Docker Desktop's NTFS
-# pass-through. Empirically those reads do NOT trigger Files-On-Demand
-# dehydration (OneDrive's reparse-point handler only fires for Win32 reads).
+# Background: facetracker runs in a Linux container reading OneDrive
+# files through Docker Desktop's NTFS bind mount. Empirically those reads
+# DO trigger Files-On-Demand hydration — i.e. once the container reads a
+# cloud-only file, its bytes get written to local C: cache. (Verified
+# 2026-05-27: 138/283 ingested OneDrive files were locally cached.)
 #
-# This script verifies that empirical claim continues to hold. If it ever
-# stops holding, you'll see LocallyCached climb above zero.
+# Mitigation: scripts/onedrive_evict.ps1 is a Windows-host daemon that
+# polls images.onedrive_revert_pending and runs `attrib +U -P` on each
+# path so OneDrive evicts the bytes on next sync.
+#
+# This script is the OBSERVABILITY counterpart — it samples ingested
+# OneDrive paths and reports how many bytes are currently on C:. Useful
+# to catch eviction-daemon failures before they balloon disk usage.
 #
 # Args:
 #   $args[0]  optional sample size (default 200; -1 = all)
@@ -49,14 +54,21 @@ $localExamples = New-Object System.Collections.Generic.List[string]
 foreach ($p in $paths) {
     if (-not (Test-Path -LiteralPath $p)) { $missing++; continue }
     try {
-        $i = Get-Item -LiteralPath $p -ErrorAction Stop
-        # ReparsePoint is OneDrive's signal for "this is a placeholder".
-        # If the file has been hydrated by a Win32 read, that flag clears.
+        $i = Get-Item -LiteralPath $p -Force -ErrorAction Stop
+        # Files-On-Demand: a file is truly cloud-only when Offline=True.
+        # ReparsePoint=True is set on BOTH cloud-only files AND "always
+        # available on this device" files (the latter still has bytes on
+        # disk). So checking ReparsePoint alone misclassifies cached
+        # files as cloud-only.
         $reparse = ($i.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+        $offline = ($i.Attributes -band [System.IO.FileAttributes]::Offline) -ne 0
         $mb = $i.Length / 1MB
-        if ($reparse) {
+        if ($offline) {
+            # True cloud-only — bytes not on disk.
             $cloudOnly++; $cloudMB += $mb
         } else {
+            # Bytes ARE on disk. Could be a hydrated reparse point or a
+            # plain file. Either way, this counts toward C: drive bloat.
             $local++; $localMB += $mb
             if ($localExamples.Count -lt 5) { $localExamples.Add($p) }
         }

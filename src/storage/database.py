@@ -34,10 +34,22 @@ class Image(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     faces = relationship("Face", back_populates="image", cascade="all, delete-orphan")
-    
+
+    # OneDrive eviction signal — set True when an OneDrive-pathed image
+    # has been processed and its bytes can be reverted to cloud-only via
+    # `attrib +U` on the host. The Windows-side onedrive_evict.ps1 daemon
+    # polls this column, runs attrib, and flips the flag back to False.
+    # See docs/onedrive-sidecar-plan.md for the broader strategy.
+    onedrive_revert_pending = Column(Boolean, default=False, nullable=False, server_default="false")
+
     __table_args__ = (
         Index("idx_images_file_hash", "file_hash"),
         Index("idx_images_status", "status"),
+        Index(
+            "idx_images_onedrive_revert_pending",
+            "onedrive_revert_pending",
+            postgresql_where=(text("onedrive_revert_pending = true")),
+        ),
     )
 
 

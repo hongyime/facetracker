@@ -55,18 +55,22 @@ async def get_scan_progress(request: Request) -> Dict[str, Any]:
 
 @router.get("/onedrive")
 async def get_onedrive_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
-    """OneDrive ingestion status + reminder banner.
+    """OneDrive ingestion + eviction status.
 
     Reports:
-    - ingested: files already in DB whose path looks like OneDrive
-    - excluded: whether OneDrive paths are currently in EXCLUDE_PATHS
-                (when True, NEW OneDrive files are not being scanned;
-                this is the safe default until the host-side sidecar
-                from docs/onedrive-sidecar-plan.md is built)
+    - ingested_count: OneDrive files in DB
+    - revert_pending: files awaiting host-side `attrib +U -P` (the
+                      onedrive_evict.ps1 daemon should drain these hourly)
+    - evict_log_age_seconds: how long ago the daemon last ran. None if
+                             the log file doesn't exist.
+    - evict_healthy: True if pending=0 OR daemon ran in last 6h.
 
-    Dashboard surfaces this as a banner so we don't forget the gap.
+    Dashboard surfaces unhealthy state as a banner so we don't silently
+    accumulate C: drive bloat.
     """
     from sqlalchemy import or_
+    import os as _os
+    import time as _time
 
     ingested = db.query(func.count(Image.id)).filter(
         or_(
@@ -75,31 +79,34 @@ async def get_onedrive_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
         )
     ).scalar() or 0
 
-    # Check whether OneDrive root is currently in EXCLUDE_PATHS.
-    # A future scan would skip OneDrive entirely if any of these are present.
-    excludes = list(settings.exclude_paths or [])
-    onedrive_excluded = any(
-        ex.endswith("/OneDrive") or "/OneDrive" in ex and not ex.endswith("/OneDrive/Caches")
-        for ex in excludes
-    )
-    onedrive_root_excluded = any(
-        ex.rstrip("/").endswith("/OneDrive") for ex in excludes
-    )
+    pending = db.query(func.count(Image.id)).filter(
+        Image.onedrive_revert_pending == True  # noqa: E712
+    ).scalar() or 0
+
+    evict_log = "/mnt/c/facetracker/logs/onedrive_evict.log"
+    evict_age = None
+    if _os.path.exists(evict_log):
+        try:
+            evict_age = int(_time.time() - _os.path.getmtime(evict_log))
+        except OSError:
+            evict_age = None
+
+    # Healthy if either: no work pending, OR daemon ran recently.
+    healthy = (pending == 0) or (evict_age is not None and evict_age < 21600)
 
     return {
         "ingested_count": int(ingested),
-        "onedrive_root_excluded": bool(onedrive_root_excluded),
-        "scanning_disabled": bool(onedrive_root_excluded),
-        "sidecar_built": False,  # flip to True when sidecar ships
+        "revert_pending": int(pending),
+        "evict_log_age_seconds": evict_age,
+        "evict_healthy": bool(healthy),
         "message": (
-            "OneDrive scanning is disabled to prevent C: drive bloat from "
-            "Files-On-Demand hydration. New OneDrive photos will NOT be "
-            "ingested until the host-side sidecar is built. "
-            "See docs/onedrive-sidecar-plan.md."
-        ) if onedrive_root_excluded else (
-            "WARNING: OneDrive scanning is enabled. A full scan could "
-            "trigger Files-On-Demand hydration and bloat C:. "
-            "See docs/onedrive-sidecar-plan.md."
+            f"OneDrive eviction daemon healthy. {pending} pending, "
+            f"last run {evict_age}s ago."
+            if healthy else
+            f"WARNING: {pending} OneDrive files awaiting eviction. "
+            f"Daemon last ran {evict_age}s ago "
+            "(threshold 6h). Schedule scripts/onedrive_evict.ps1 in "
+            "Task Scheduler or run manually to prevent C: bloat."
         ),
     }
 

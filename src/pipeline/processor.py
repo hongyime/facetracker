@@ -490,6 +490,16 @@ class PipelineProcessor:
             stat = result.file_path.stat()
             file_path_str = str(result.file_path)
 
+            # Detect OneDrive paths so we can flag the row for host-side
+            # eviction. The Linux container can't run `attrib +U` itself;
+            # scripts/onedrive_evict.ps1 polls this column hourly and runs
+            # the attrib call from the Windows host. Without this, scanning
+            # OneDrive in bulk hydrates the local C: cache permanently.
+            is_onedrive = (
+                "/OneDrive/" in file_path_str
+                or "/OneDrive - " in file_path_str
+            )
+
             existing = (
                 session.query(Image)
                 .filter(Image.file_path == file_path_str)
@@ -509,6 +519,7 @@ class PipelineProcessor:
                     is_video=result.is_video,
                     video_frames=result.video_frames_processed,
                     error_message=None,
+                    onedrive_revert_pending=is_onedrive,
                 )
                 session.add(image_record)
                 session.flush()  # populate image_record.id
@@ -526,6 +537,11 @@ class PipelineProcessor:
                 existing.is_video = result.is_video
                 existing.video_frames = result.video_frames_processed
                 existing.error_message = None
+                # Re-flag for revert if this is a OneDrive path. Idempotent —
+                # if eviction already happened the daemon will see Offline=True
+                # and just flip pending=False without doing anything.
+                if is_onedrive:
+                    existing.onedrive_revert_pending = True
                 session.flush()
                 image_record = existing
 

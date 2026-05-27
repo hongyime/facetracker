@@ -64,6 +64,8 @@ echo  17.  FAISS auto-tune nlist (re-train if corpus grew, prompts)
 echo  18.  Backup snapshot now (writes to Y:\facetracker_backups)
 echo  19.  Show last 20 backup log lines
 echo  20.  OneDrive footprint check (verify ingested files still cloud-only)
+echo  21.  OneDrive eviction - run now (drains revert_pending queue)
+echo  22.  OneDrive eviction - last 20 log lines
 echo.
 echo   0.  Exit
 echo.
@@ -89,6 +91,8 @@ if "%CHOICE%"=="17" goto nlist_tune
 if "%CHOICE%"=="18" goto backup_now
 if "%CHOICE%"=="19" goto backup_log
 if "%CHOICE%"=="20" goto onedrive_check
+if "%CHOICE%"=="21" goto onedrive_evict
+if "%CHOICE%"=="22" goto onedrive_evict_log
 if "%CHOICE%"=="0"  goto end
 goto menu
 
@@ -241,6 +245,23 @@ echo (background: facetracker reads through /mnt/c which does NOT trigger
 echo  Files-On-Demand dehydration. This script verifies that's still true.)
 echo.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\onedrive_monitor.ps1" -SampleSize -1
+goto pause_return
+
+:onedrive_evict
+echo.
+echo [onedrive] running eviction daemon (attrib +U -P on revert_pending paths)...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\onedrive_evict.ps1" -Verbose
+goto pause_return
+
+:onedrive_evict_log
+echo.
+echo [onedrive] last 20 lines of onedrive_evict.log:
+echo.
+if exist "%~dp0logs\onedrive_evict.log" (
+    powershell -NoProfile -Command "Get-Content '%~dp0logs\onedrive_evict.log' -Tail 20"
+) else (
+    echo   ^(no log yet - run option 21 at least once^)
+)
 goto pause_return
 
 
