@@ -54,6 +54,16 @@ echo  11.  Start dashboard
 echo  12.  Stop dashboard
 echo  13.  Open dashboard in browser
 echo.
+echo ------------------------------------------------------------
+echo   MAINTENANCE
+echo ------------------------------------------------------------
+echo  14.  Cluster faces - incremental (assign new faces only, safe)
+echo  15.  Cluster faces - dry-run @ 0.6 (preview, no DB writes)
+echo  16.  Cluster faces - FULL re-cluster @ 0.6 (destructive, prompts)
+echo  17.  FAISS auto-tune nlist (re-train if corpus grew, prompts)
+echo  18.  Backup snapshot now (writes to Y:\facetracker_backups)
+echo  19.  Show last 20 backup log lines
+echo.
 echo   0.  Exit
 echo.
 set /p CHOICE=Enter choice: 
@@ -71,6 +81,12 @@ if "%CHOICE%"=="10" goto resume_idx
 if "%CHOICE%"=="11" goto dash_start
 if "%CHOICE%"=="12" goto dash_stop
 if "%CHOICE%"=="13" goto dash_open
+if "%CHOICE%"=="14" goto cluster_inc
+if "%CHOICE%"=="15" goto cluster_dry
+if "%CHOICE%"=="16" goto cluster_full
+if "%CHOICE%"=="17" goto nlist_tune
+if "%CHOICE%"=="18" goto backup_now
+if "%CHOICE%"=="19" goto backup_log
 if "%CHOICE%"=="0"  goto end
 goto menu
 
@@ -156,6 +172,64 @@ goto pause_return
 echo.
 echo [dash] opening browser...
 start "" "http://localhost:8701"
+goto pause_return
+
+
+:cluster_inc
+echo.
+echo [cluster] running incremental clustering (assigns NEW faces only)...
+echo This is safe and non-destructive. Existing identities are unchanged.
+docker exec facetracker-api python -u /app/scripts/cluster_faces.py --mode=incremental --threshold=0.6
+goto pause_return
+
+:cluster_dry
+echo.
+echo [cluster] DRY-RUN at threshold 0.6 (no DB changes)...
+docker exec facetracker-api python -u /app/scripts/cluster_faces.py --mode=full --threshold=0.6 --dry-run
+goto pause_return
+
+:cluster_full
+echo.
+echo [cluster] FULL re-cluster at threshold 0.6.
+echo WARNING: this DELETES every existing identity + face_identity_map row
+echo and rebuilds from scratch. Manual labels (name, is_verified) will be LOST.
+echo If you want to keep manual labels, cancel here and use option 14 instead.
+echo.
+set /p CONFIRM_FULL=Type YES to proceed: 
+if /i not "%CONFIRM_FULL%"=="YES" (
+    echo Cancelled.
+    goto pause_return
+)
+docker exec facetracker-api python -u /app/scripts/cluster_faces.py --mode=full --threshold=0.6 --confirm
+goto pause_return
+
+:nlist_tune
+echo.
+echo [nlist] checking if FAISS IVF nlist needs adjustment for current corpus size...
+echo (DRY RUN first - shows decision without changing anything)
+docker exec facetracker-api python -u /app/scripts/faiss_autotune_nlist.py --dry-run
+echo.
+echo To actually rebuild, the api MUST be stopped first. The script refuses
+echo to swap files while the api is up. Stop api manually then run:
+echo     docker run --rm --env-file .env --network facetracker-net ^
+echo         -v "C:/facetracker:/app" -v "Y:/faces:/app/storage" -w /app ^
+echo         facetracker-api python scripts/faiss_autotune_nlist.py --confirm-and-swap
+goto pause_return
+
+:backup_now
+echo.
+echo [backup] running snapshot to Y:\facetracker_backups (keeps newest 4)...
+call "%~dp0scripts\backup_snapshot.bat"
+goto pause_return
+
+:backup_log
+echo.
+echo [backup] last 20 lines of Y:\facetracker_backups\backup.log:
+if exist "Y:\facetracker_backups\backup.log" (
+    powershell -NoProfile -Command "Get-Content 'Y:\facetracker_backups\backup.log' -Tail 20"
+) else (
+    echo   ^(no log yet - run option 18 at least once^)
+)
 goto pause_return
 
 
