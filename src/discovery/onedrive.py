@@ -1,4 +1,43 @@
-"""OneDrive file handler with multi-faceted detection."""
+"""OneDrive file handler with multi-faceted detection.
+
+============================================================================
+WARNING: this module is currently DEAD CODE on the production deployment.
+============================================================================
+
+The api process runs inside a Linux container (Docker Desktop on Windows).
+Every detection method here calls a Windows-only binary:
+
+  * `fsutil`   (line ~148)  -- Windows kernel utility, not in Linux
+  * `powershell` (line ~185, 319) -- Windows shell, not in Linux
+  * `attrib`   (line ~300)  -- Windows command, not in Linux
+
+When called from the container all three raise `FileNotFoundError`,
+caught silently, returning False. As a result `detect_placeholder_status`
+always reports `is_placeholder=False`, `process_file` returns
+`(file_path, should_revert=False)`, and the pipeline reads the file
+straight off the `/mnt/c` bind mount with NO download/revert flow.
+
+Empirically, reading a OneDrive Files-On-Demand placeholder through
+Docker Desktop's NTFS pass-through does NOT trigger dehydration. The
+files stay cloud-only on the host. We have verified this:
+
+  scripts/onedrive_monitor.ps1   -- run from menu option 20
+  283 ingested OneDrive files -> 138 cloud-only, 0 locally cached.
+
+If that empirical claim ever stops holding (Docker Desktop change,
+OneDrive client update, host policy change), the monitor will detect
+locally-cached counts > 0 and exit non-zero. At that point either:
+
+  1) Move OneDrive paths to EXCLUDE_PATHS in .env (cheapest fix)
+  2) Build a Windows-host sidecar that handles OneDrive natively and
+     hands files to the container via a queue (proper but expensive)
+  3) Run a host-side cleanup that flags retroactively-hydrated files
+     back to Offline (one-shot fix per scan)
+
+The methods below are kept on disk in case option 2 happens AND the
+sidecar reuses this code; they are NOT removed because removing them
+would just make the next reader rediscover the same problem from scratch.
+"""
 
 import os
 import subprocess

@@ -63,6 +63,7 @@ echo  16.  Cluster faces - FULL re-cluster @ 0.6 (destructive, prompts)
 echo  17.  FAISS auto-tune nlist (re-train if corpus grew, prompts)
 echo  18.  Backup snapshot now (writes to Y:\facetracker_backups)
 echo  19.  Show last 20 backup log lines
+echo  20.  OneDrive footprint check (verify ingested files still cloud-only)
 echo.
 echo   0.  Exit
 echo.
@@ -87,6 +88,7 @@ if "%CHOICE%"=="16" goto cluster_full
 if "%CHOICE%"=="17" goto nlist_tune
 if "%CHOICE%"=="18" goto backup_now
 if "%CHOICE%"=="19" goto backup_log
+if "%CHOICE%"=="20" goto onedrive_check
 if "%CHOICE%"=="0"  goto end
 goto menu
 
@@ -230,6 +232,15 @@ if exist "Y:\facetracker_backups\backup.log" (
 ) else (
     echo   ^(no log yet - run option 18 at least once^)
 )
+goto pause_return
+
+:onedrive_check
+echo.
+echo [onedrive] checking that ingested OneDrive files are still cloud-only...
+echo (background: facetracker reads through /mnt/c which does NOT trigger
+echo  Files-On-Demand dehydration. This script verifies that's still true.)
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\onedrive_monitor.ps1" -SampleSize -1
 goto pause_return
 
 
