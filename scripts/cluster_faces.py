@@ -39,8 +39,8 @@ Usage (always run inside docker so it sees postgres + the FAISS index):
 
   # Dry run — prints cluster size distribution, writes nothing:
   docker run --rm --env-file .env --network facetracker-net \\
-      -v "$(pwd):/app" -w /app -e FACE_STORAGE_ROOT=/mnt/y/faces \\
-      -v "Y:/faces:/mnt/y/faces" facetracker-api \\
+      -v "$(pwd):/app" -w /app -e FACE_STORAGE_ROOT=/mnt/y/facetracker/faces \\
+      -v "Y:/facetracker/faces:/mnt/y/facetracker/faces" facetracker-api \\
       python scripts/cluster_faces.py --mode=full --threshold=0.6 --dry-run
 
   # Real run with --confirm — deletes existing identities + repopulates:

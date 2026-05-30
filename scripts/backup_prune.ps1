@@ -3,7 +3,7 @@
 # don't have to escape pipes/dollar-signs through cmd.exe.
 #
 # Args:
-#   $args[0]  backup root directory (e.g. Y:\facetracker_backups)
+#   $args[0]  backup root directory (e.g. Y:\facetracker\backups)
 #   $args[1]  number of snapshots to keep (e.g. 4)
 #
 # A "snapshot" is any subdirectory of the root whose name does NOT end in

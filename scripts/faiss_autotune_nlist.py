@@ -106,9 +106,9 @@ def _live_index_paths() -> tuple[Path, Path]:
         if cand.exists():
             base = cand
         else:
-            base = Path("/mnt/y/faces/embeddings/live")
+            base = Path("/mnt/y/facetracker/faces/embeddings/live")
     else:
-        base = Path("Y:/faces/embeddings/live")
+        base = Path("Y:/facetracker/faces/embeddings/live")
     return base / "face_index.faiss", base / "face_index.ids.npy"
 
 

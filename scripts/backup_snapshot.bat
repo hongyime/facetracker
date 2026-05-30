@@ -4,9 +4,9 @@ REM
 REM Pure batch + docker exec. No python, no extra dependencies on the host.
 REM
 REM What it does, in order:
-REM   1. Make a timestamped .partial directory under Y:\facetracker_backups
+REM   1. Make a timestamped .partial directory under Y:\facetracker\backups
 REM   2. pg_dump via `docker exec facetracker-postgres` -> database.sql
-REM   3. Copy live FAISS index files from Y:\faces\embeddings\live
+REM   3. Copy live FAISS index files from Y:\facetracker\faces\embeddings\live
 REM   4. Copy .env so secrets + index-type setting are recoverable
 REM   5. Write manifest.txt with timestamp, git sha, and DB row counts
 REM   6. Atomic rename .partial -> final
@@ -15,13 +15,13 @@ REM
 REM An interrupted run leaves a .partial directory; subsequent runs
 REM ignore .partial dirs for retention purposes.
 REM
-REM Logs to Y:\facetracker_backups\backup.log.
+REM Logs to Y:\facetracker\backups\backup.log.
 
 setlocal enableextensions enabledelayedexpansion
 
 set REPO_DIR=C:\facetracker
-set BACKUP_ROOT=Y:\facetracker_backups
-set FAISS_LIVE=Y:\faces\embeddings\live
+set BACKUP_ROOT=Y:\facetracker\backups
+set FAISS_LIVE=Y:\facetracker\faces\embeddings\live
 set KEEP=4
 set LOG_FILE=%BACKUP_ROOT%\backup.log
 set PG_USER=postgres

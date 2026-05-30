@@ -1,6 +1,6 @@
 """Smoke 4: FaissReaper drains pending → committed end-to-end.
 
-- Override FACE_STORAGE_ROOT to /tmp/smoke4_faiss so we don't touch Y:/faces.
+- Override FACE_STORAGE_ROOT to /tmp/smoke4_faiss so we don't touch Y:/facetracker/faces.
 - Seed N faces + outbox rows.
 - Start reaper, wait until count_by_status shows them all committed.
 - Verify FAISS index reports them via search.
@@ -50,7 +50,7 @@ N_FACES = 5
 
 
 def main() -> int:
-    # Sanity: FAISS path must point inside the tmp dir, not Y:/faces
+    # Sanity: FAISS path must point inside the tmp dir, not Y:/facetracker/faces
     assert TMP_FAISS in settings.faiss_live_path, \
         f"override leaked! faiss_live_path={settings.faiss_live_path}"
     print(f"faiss_live_path={settings.faiss_live_path}")
