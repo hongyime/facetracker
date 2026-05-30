@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 from src.config import settings
 from src.storage.database import Database, get_database, get_db_session
 from src.storage.faiss_index import BatchedFAISSIndex
-from src.engine.embedder import FaceEmbedder
 from src.engine.detector import FaceDetector
 from src.search.engine import SearchEngine, SearchResult, SearchResponse
 from src.search.ranking import RankingStrategy
@@ -20,7 +19,6 @@ router = APIRouter()
 
 # Global instances for reuse
 _detector = None
-_embedder = None
 _faiss_index = None
 _search_engine = None
 
@@ -48,14 +46,6 @@ def get_detector_service() -> FaceDetector:
     return _detector
 
 
-def get_embedder_service() -> FaceEmbedder:
-    """Dependency to get face embedder."""
-    global _embedder
-    if _embedder is None:
-        _embedder = FaceEmbedder()
-    return _embedder
-
-
 @router.post("/search", response_model=SearchResponse)
 async def search_faces(
     image: UploadFile = File(...),
@@ -64,19 +54,18 @@ async def search_faces(
     db: Session = Depends(get_db),
     search_engine: SearchEngine = Depends(get_search_service),
     detector: FaceDetector = Depends(get_detector_service),
-    embedder: FaceEmbedder = Depends(get_embedder_service),
 ):
     """
     Search for similar faces by uploading an image.
     """
     start_time = time.time()
     try:
-        # Read and detect
+        # Read and detect (extract_embeddings=True pulls embedding from buffalo_l recognition module)
         contents = await image.read()
         img = Image.open(io.BytesIO(contents))
         img_array = np.array(img.convert("RGB"))
         
-        faces = detector.detect(img_array)
+        faces = detector.detect(img_array, extract_embeddings=True)
         if not faces:
             return SearchResponse(
                 results=[], 
@@ -88,8 +77,8 @@ async def search_faces(
         # Best face (most prominent)
         best_face = max(faces, key=lambda f: f.quality_score)
         
-        # Embed
-        embedding = embedder.embed(img_array, best_face.bbox)
+        # Pull embedding from detector result — same vector space as indexed faces
+        embedding = best_face.embedding
         if embedding is None:
             raise HTTPException(status_code=400, detail="Failed to extract embedding")
         
@@ -121,7 +110,6 @@ async def search_multi_face(
     db: Session = Depends(get_db),
     search_engine: SearchEngine = Depends(get_search_service),
     detector: FaceDetector = Depends(get_detector_service),
-    embedder: FaceEmbedder = Depends(get_embedder_service),
 ):
     """
     Multi-face search - find images containing specific people.
@@ -132,7 +120,7 @@ async def search_multi_face(
         img = Image.open(io.BytesIO(contents))
         img_array = np.array(img.convert("RGB"))
         
-        faces = detector.detect(img_array)
+        faces = detector.detect(img_array, extract_embeddings=True)
         if not faces:
             return SearchResponse(
                 results=[], 
@@ -141,12 +129,8 @@ async def search_multi_face(
                 search_time_ms=(time.time() - start_time) * 1000
             )
         
-        # Embed all detected faces
-        embeddings = []
-        for face in faces:
-            emb = embedder.embed(img_array, face.bbox)
-            if emb is not None:
-                embeddings.append(emb)
+        # Pull embeddings from detector results — same vector space as indexed faces
+        embeddings = [f.embedding for f in faces if f.embedding is not None]
         
         if not embeddings:
             raise HTTPException(status_code=400, detail="No usable faces detected")

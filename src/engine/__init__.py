@@ -2,7 +2,6 @@
 
 from src.engine.detector import FaceDetector, FaceDetectionResult
 from src.engine.tracker import FaceTracker, TrackedFace
-from src.engine.embedder import FaceEmbedder
 from src.engine.quality import QualityScorer
 
 __all__ = [
@@ -10,6 +9,5 @@ __all__ = [
     "FaceDetectionResult",
     "FaceTracker",
     "TrackedFace",
-    "FaceEmbedder",
     "QualityScorer",
 ]
