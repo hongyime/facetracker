@@ -129,6 +129,11 @@ class Settings(BaseSettings):
     search_min_similarity: float = 0.6
     # search_cache_enabled / redis_host / redis_port removed — Redis was never
     # wired into any code path. Remove redis container from docker-compose
+
+    # Identity clustering
+    # Cosine similarity threshold for Chinese Whispers and incremental assignment.
+    # 0.6 = strict (fewer false merges). Lower to ~0.5 to merge more aggressively.
+    identity_cluster_threshold: float = 0.6
     # if caching is not being implemented.
    
     # Database

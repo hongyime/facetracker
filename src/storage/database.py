@@ -119,7 +119,6 @@ class Identity(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     face_mappings = relationship("FaceIdentityMap", back_populates="identity", cascade="all, delete-orphan")
-    audit_logs = relationship("VerificationAudit", back_populates="identity", cascade="all, delete-orphan")
 
 
 class FaceIdentityMap(Base):
@@ -139,91 +138,6 @@ class FaceIdentityMap(Base):
     
     face = relationship("Face", back_populates="identity_mappings")
     identity = relationship("Identity", back_populates="face_mappings")
-
-
-class VerificationAudit(Base):
-    """Audit log for identity verification actions."""
-    
-    __tablename__ = "verification_audit"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    identity_id = Column(Integer, ForeignKey("identities.id"), nullable=False)
-    action = Column(String(50), nullable=False)  # verify, merge, split, rename
-    previous_value = Column(Text)
-    new_value = Column(Text)
-    user_id = Column(String(100))
-    reason = Column(Text)
-    
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
-    
-    identity = relationship("Identity", back_populates="audit_logs")
-
-
-class FileManifest(Base):
-    """File manifest for tracking processed files.
-
-    NOTE: This table was created speculatively but has 0 rows in production
-    (verified 2026-05-30). FileManifestManager uses a JSON file instead:
-    src/discovery/manifest.py. The table schema is kept so SQLAlchemy
-    create_all() doesn't error, but it is NOT the live manifest.
-
-    If you want to migrate the manifest to Postgres:
-      1. Wire FileManifestManager.needs_processing() to query this table.
-      2. Wire add_file() / mark_deleted() / save_manifest() to INSERT/UPDATE.
-      3. Backfill from the JSON file on first boot.
-      4. Drop the JSON manifest after backfill verified.
-    """
-    
-    __tablename__ = "file_manifest"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    file_path = Column(Text, nullable=False, unique=True, index=True)
-    file_hash = Column(String(64), nullable=False)
-    file_size = Column(Integer, nullable=False)
-    file_mtime = Column(Float, nullable=False)
-    
-    # Processing status
-    is_processed = Column(Boolean, default=False)
-    is_deleted = Column(Boolean, default=False)
-    last_checked = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-    
-    __table_args__ = (
-        Index("idx_file_manifest_path", "file_path"),
-        Index("idx_file_manifest_processed", "is_processed"),
-    )
-
-
-class OneDriveFile(Base):
-    """OneDrive file tracking table."""
-    
-    __tablename__ = "onedrive_files"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    file_path = Column(Text, nullable=False, unique=True, index=True)
-    
-    # OneDrive status indicators
-    is_placeholder = Column(Boolean, default=False)
-    is_online_only = Column(Boolean, default=False)
-    is_local = Column(Boolean, default=False)
-    
-    # Detection method results
-    has_reparse_point = Column(Boolean, default=False)
-    has_cloud_attribute = Column(Boolean, default=False)
-    size_mismatch = Column(Boolean, default=False)
-    
-    # Processing status
-    download_status = Column(String(50))  # pending, downloading, completed, failed
-    revert_status = Column(String(50))  # pending, reverting, completed, failed
-    
-    local_path = Column(Text)  # Temp path when downloaded
-    original_size = Column(Integer)
-    downloaded_size = Column(Integer)
-    
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 # Database connection management

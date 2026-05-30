@@ -373,6 +373,14 @@ class IndexingManager:
                 )
                 self.last_scan_completed = datetime.now()
                 self._scan_error_backoff = 60  # reset on successful scan
+
+                # Incremental identity clustering: assign any faces added during
+                # this scan cycle to existing or new identity clusters.
+                # Runs in-process after each successful full scan so the
+                # Identities page in the dashboard stays current without a
+                # manual cluster_faces.py run.
+                self._run_incremental_clustering()
+
                 self.is_scanning = False
                 
                 # Wait for next scan
@@ -395,6 +403,65 @@ class IndexingManager:
                     time.sleep(1)
                 self._scan_error_backoff = min(_backoff * 2, 600)
                 
+    def _run_incremental_clustering(self) -> None:
+        """Assign any unmapped faces to existing or new identity clusters.
+
+        Called automatically after each successful full scan cycle.
+        Uses the same DB engine as the rest of the manager — no subprocess.
+
+        If no unmapped faces exist this is a fast no-op (one COUNT query).
+        Errors are caught and logged; a clustering failure never aborts
+        the scan loop or marks the scan as failed.
+        """
+        try:
+            # Import inline so the clustering module doesn't have to be loaded
+            # at manager startup (avoids faiss import cost on every restart
+            # if clustering is unused).
+            import sys
+            from pathlib import Path as _Path
+            # scripts/ is at /app/code/scripts/ inside the container
+            # (the whole repo is bind-mounted at /app/code).
+            # We try two candidate paths so this also works when running
+            # directly from the repo root (e.g. during local testing).
+            for _candidate in [
+                _Path("//app/code/scripts"),
+                _Path(__file__).resolve().parent.parent.parent / "scripts",
+            ]:
+                if _candidate.exists() and str(_candidate) not in sys.path:
+                    sys.path.insert(0, str(_candidate))
+                    break
+
+            from sqlalchemy.orm import Session as _Session
+            # Reuse the already-connected engine.
+            engine = self.db.engine
+
+            # Quick check: any unmapped faces?
+            from sqlalchemy import text as _text
+            with engine.connect() as conn:
+                unmapped = conn.execute(
+                    _text(
+                        "SELECT COUNT(*) FROM faces f "
+                        "LEFT JOIN face_identity_map m ON m.face_id = f.id "
+                        "WHERE m.id IS NULL AND f.embedding_vec IS NOT NULL"
+                    )
+                ).scalar()
+
+            if unmapped == 0:
+                logger.debug("Incremental clustering: no unmapped faces, skipping.")
+                return
+
+            logger.info(f"Incremental clustering: {unmapped} unmapped faces to assign...")
+            from cluster_faces import _mode_incremental
+            with _Session(engine) as session:
+                threshold = getattr(self.config, "identity_cluster_threshold", 0.6)
+                _mode_incremental(session, threshold=threshold)
+            logger.info("Incremental clustering: complete.")
+
+        except Exception as e:
+            logger.error(
+                f"Incremental clustering failed (non-fatal, will retry next scan cycle): {e}"
+            )
+
     def _recover_pending_images(self) -> None:
         """One-shot recovery for orphaned `images.status='pending'` rows.
 
