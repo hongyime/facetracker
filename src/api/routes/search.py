@@ -1,6 +1,6 @@
 """Search API routes for face search operations."""
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, Request, UploadFile, File, HTTPException, Depends
 from typing import List, Optional
 import numpy as np
 from PIL import Image
@@ -9,18 +9,11 @@ import time
 from sqlalchemy.orm import Session
 
 from src.config import settings
-from src.storage.database import Database, get_database, get_db_session
-from src.storage.faiss_index import BatchedFAISSIndex
-from src.engine.detector import FaceDetector
+from src.storage.database import get_db_session
 from src.search.engine import SearchEngine, SearchResult, SearchResponse
 from src.search.ranking import RankingStrategy
 
 router = APIRouter()
-
-# Global instances for reuse
-_detector = None
-_faiss_index = None
-_search_engine = None
 
 
 def get_db():
@@ -28,129 +21,128 @@ def get_db():
     yield from get_db_session(settings.database_url)
 
 
-def get_search_service() -> SearchEngine:
-    """Dependency to get search engine."""
-    global _search_engine, _faiss_index
-    if _faiss_index is None:
-        _faiss_index = BatchedFAISSIndex(settings)
-    if _search_engine is None:
-        _search_engine = SearchEngine(_faiss_index, settings)
-    return _search_engine
-
-
-def get_detector_service() -> FaceDetector:
-    """Dependency to get face detector."""
-    global _detector
-    if _detector is None:
-        _detector = FaceDetector()
-    return _detector
-
-
 @router.post("/search", response_model=SearchResponse)
 async def search_faces(
+    request: Request,
     image: UploadFile = File(...),
     top_k: int = 100,
     min_similarity: Optional[float] = None,
     db: Session = Depends(get_db),
-    search_engine: SearchEngine = Depends(get_search_service),
-    detector: FaceDetector = Depends(get_detector_service),
 ):
     """
     Search for similar faces by uploading an image.
+
+    Uses the live in-memory FAISS index (app.state.faiss_index) so results
+    include faces ingested since startup — not just what was on disk at boot.
     """
     start_time = time.time()
+
+    # Shared singletons from app.state — same objects the ingest pipeline writes to
+    faiss_index = request.app.state.faiss_index
+    detector = request.app.state.detector
+    search_engine = SearchEngine(faiss_index, settings)
+    ranker = RankingStrategy()
+
     try:
-        # Read and detect (extract_embeddings=True pulls embedding from buffalo_l recognition module)
         contents = await image.read()
         img = Image.open(io.BytesIO(contents))
         img_array = np.array(img.convert("RGB"))
-        
+
         faces = detector.detect(img_array, extract_embeddings=True)
         if not faces:
             return SearchResponse(
-                results=[], 
-                total_found=0, 
-                query_embedding_dim=512, 
-                search_time_ms=(time.time() - start_time) * 1000
+                results=[],
+                total_found=0,
+                query_embedding_dim=512,
+                search_time_ms=(time.time() - start_time) * 1000,
             )
-        
-        # Best face (most prominent)
+
+        # Best face (highest quality score)
         best_face = max(faces, key=lambda f: f.quality_score)
-        
-        # Pull embedding from detector result — same vector space as indexed faces
+
+        # Pull embedding from detector result — same vector space as indexed faces (buffalo_l)
         embedding = best_face.embedding
         if embedding is None:
             raise HTTPException(status_code=400, detail="Failed to extract embedding")
-        
-        # Search
-        results = search_engine.search(
-            embedding, 
-            k=top_k, 
-            threshold=min_similarity, 
-            db_session=db
+
+        raw_results = search_engine.search(
+            embedding,
+            k=top_k,
+            threshold=min_similarity,
+            db_session=db,
         )
-        
+
+        # Apply ranking (similarity + quality weighting)
+        ranked = ranker.rank(raw_results)
+
         return SearchResponse(
-            results=results,
-            total_found=len(results),
+            results=ranked,
+            total_found=len(ranked),
             query_embedding_dim=512,
-            search_time_ms=(time.time() - start_time) * 1000
+            search_time_ms=(time.time() - start_time) * 1000,
         )
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/search/multi", response_model=SearchResponse)
 async def search_multi_face(
+    request: Request,
     image: UploadFile = File(...),
     mode: str = "any",
     top_k: int = 100,
     min_similarity: Optional[float] = None,
     db: Session = Depends(get_db),
-    search_engine: SearchEngine = Depends(get_search_service),
-    detector: FaceDetector = Depends(get_detector_service),
 ):
     """
-    Multi-face search - find images containing specific people.
+    Multi-face search — find images containing specific people.
+    mode='any': union (image matches any face in query).
+    mode='all': intersection (image must contain all faces in query).
     """
     start_time = time.time()
+
+    faiss_index = request.app.state.faiss_index
+    detector = request.app.state.detector
+    search_engine = SearchEngine(faiss_index, settings)
+
     try:
         contents = await image.read()
         img = Image.open(io.BytesIO(contents))
         img_array = np.array(img.convert("RGB"))
-        
+
         faces = detector.detect(img_array, extract_embeddings=True)
         if not faces:
             return SearchResponse(
-                results=[], 
-                total_found=0, 
-                query_embedding_dim=512, 
-                search_time_ms=(time.time() - start_time) * 1000
+                results=[],
+                total_found=0,
+                query_embedding_dim=512,
+                search_time_ms=(time.time() - start_time) * 1000,
             )
-        
-        # Pull embeddings from detector results — same vector space as indexed faces
+
         embeddings = [f.embedding for f in faces if f.embedding is not None]
-        
         if not embeddings:
             raise HTTPException(status_code=400, detail="No usable faces detected")
-        
-        # Search multi
+
         results = search_engine.search_multi(
             embeddings,
             mode=mode,
             k=top_k,
             threshold=min_similarity,
-            db_session=db
+            db_session=db,
         )
-        
+
         return SearchResponse(
             results=results,
             total_found=len(results),
             query_embedding_dim=512,
-            search_time_ms=(time.time() - start_time) * 1000
+            search_time_ms=(time.time() - start_time) * 1000,
         )
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -164,9 +156,7 @@ async def search_within_identity(
     """
     Search for faces within a specific identity cluster.
 
-    NOT IMPLEMENTED. The previous version returned a hardcoded empty list,
-    which silently misled callers. Returns HTTP 501 instead so clients
-    correctly surface the gap.
+    NOT IMPLEMENTED. Returns HTTP 501 so clients correctly surface the gap.
     """
     raise HTTPException(
         status_code=501,

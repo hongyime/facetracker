@@ -14,15 +14,6 @@ services:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
     restart: unless-stopped
 
-  redis:
-    image: redis:7-alpine
-    container_name: facetracker-redis
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-    restart: unless-stopped
-
   api:
     build: .
     container_name: facetracker-api
@@ -41,8 +32,6 @@ services:
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
       - FACE_STORAGE_ROOT=/app/storage
     volumes:
       - ${HOST_FACE_STORAGE:-Y:/facetracker/faces}:/app/storage:rw
@@ -59,8 +48,6 @@ services:
       - "${DASHBOARD_PORT:-5454}:8000"
     depends_on:
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     restart: unless-stopped
     deploy:
@@ -99,5 +86,4 @@ networks:
     name: facetracker-net
 
 volumes:
-  redis_data:
   model_cache:

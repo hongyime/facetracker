@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List, Tuple, Optional
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.config import Settings
 from src.utils.logging import get_logger
@@ -31,7 +31,7 @@ class BatchedFAISSIndex:
             config: Application settings
         """
         self.config = config
-        self.dimension = 512  # Antelopev2 embedding dimension
+        self.dimension = 512  # buffalo_l w600k_r50 recognition embedding dimension
         
         # Live index (searchable)
         self.live_index: Optional[faiss.Index] = None
@@ -46,11 +46,12 @@ class BatchedFAISSIndex:
         # Staging buffer
         self.staging_vectors: List[np.ndarray] = []
         self.staging_ids: List[str] = []
+        self.staging_ids_set: set = set()  # O(1) membership mirror of staging_ids
         self.staging_size = config.faiss_staging_size
         
         # Merge control
         self.merge_lock = threading.Lock()
-        self.last_merge_time = datetime.utcnow()
+        self.last_merge_time = datetime.now(timezone.utc)
         
         # Index paths
         self.live_path = Path(config.faiss_live_path)
@@ -218,8 +219,8 @@ class BatchedFAISSIndex:
         with self.merge_lock:
             if face_id in self.live_ids_set:
                 return True
-            # staging_ids is small relative to live; linear scan is fine
-            return face_id in self.staging_ids
+            # O(1) via staging_ids_set mirror
+            return face_id in self.staging_ids_set
     
     def add(self, embedding: np.ndarray, face_id: str) -> int:
         """
@@ -243,10 +244,11 @@ class BatchedFAISSIndex:
         embedding = embedding.flatten()
 
         with self.merge_lock:
-            if face_id in self.live_ids_set or face_id in self.staging_ids:
+            if face_id in self.live_ids_set or face_id in self.staging_ids_set:
                 return -1
             self.staging_vectors.append(embedding)
             self.staging_ids.append(face_id)
+            self.staging_ids_set.add(face_id)
             count = len(self.staging_vectors)
             should_merge = count >= self.staging_size
 
@@ -281,10 +283,11 @@ class BatchedFAISSIndex:
         added = 0
         with self.merge_lock:
             for i, fid in enumerate(face_ids):
-                if fid in self.live_ids_set or fid in self.staging_ids:
+                if fid in self.live_ids_set or fid in self.staging_ids_set:
                     continue
                 self.staging_vectors.append(embeddings[i])
                 self.staging_ids.append(fid)
+                self.staging_ids_set.add(fid)
                 added += 1
 
             count = len(self.staging_vectors)
@@ -315,6 +318,17 @@ class BatchedFAISSIndex:
 
         # Search live index (read lock would be better but we'll use merge_lock
         # to ensure we don't search while merging)
+        #
+        # COUPLING NOTE: merge_lock serializes both writes (_merge_staging_to_live,
+        # add, add_batch) and this search. That means a slow FAISS IVF search
+        # (~5-20ms at nprobe=32) blocks concurrent adds, and a large merge
+        # (~50ms for 2048 vectors) blocks concurrent searches. Acceptable at
+        # current 17k-vector scale but worth revisiting if:
+        #   (a) search latency SLA < 50ms, or
+        #   (b) ingest rate exceeds ~1k vectors/s.
+        # Upgrade path: RWLock (readers share, writer exclusive) or copy-on-write
+        # index snapshot so searches operate on a stable snapshot while merges
+        # update in the background.
         with self.merge_lock:
             D, I = self.live_index.search(embedding, k)
 
@@ -408,7 +422,8 @@ class BatchedFAISSIndex:
             self.live_count = new_live_count
             self.staging_vectors.clear()
             self.staging_ids.clear()
-            self.last_merge_time = datetime.utcnow()
+            self.staging_ids_set.clear()  # keep in sync with staging_ids
+            self.last_merge_time = datetime.now(timezone.utc)
             logger.info(f"Merge complete. Live index now has {self.live_count} vectors.")
 
     def _save_index(self) -> None:

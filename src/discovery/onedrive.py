@@ -79,9 +79,11 @@ class OneDriveHandler:
         self.revert_verify = config.onedrive_revert_verify
         self.multi_detect = config.onedrive_multi_detect
         
-        # Temp directory for downloads
+        # Temp directory for downloads — only create if OneDrive is enabled.
+        # When disabled, the dir stays absent so the handler is a cheap no-op.
         self.temp_dir = Path(config.face_storage_root) / "cache" / "onedrive_temp"
-        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        if self.enabled:
+            self.temp_dir.mkdir(parents=True, exist_ok=True)
     
     def is_onedrive_path(self, file_path: str) -> bool:
         """

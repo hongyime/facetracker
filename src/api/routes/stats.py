@@ -167,3 +167,136 @@ async def get_recent_activity(limit: int = 50) -> Dict[str, Any]:
     NOT IMPLEMENTED — returns HTTP 501 rather than a fabricated empty list.
     """
     raise HTTPException(status_code=501, detail="stats.recent-activity is not implemented yet")
+
+
+@router.get("/faiss-health")
+async def get_faiss_health(request: Request, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    """FAISS index health: drift detection + outbox backlog + IVF train state.
+
+    This is the detector for the one unguarded silent-corruption path in the
+    system. The merge path persists the on-disk ids/index files crash-safely,
+    BUT if the process dies after live_index.add() and before the ids/index
+    are saved, the in-memory vectors are lost while the outbox rows are (or
+    will be) marked 'committed'. Committed rows are never re-drained, so those
+    faces live in faces.embedding_vec but vanish from FAISS — permanently
+    unsearchable, with nothing watching. This endpoint surfaces that as drift.
+
+    Signals:
+      - db_face_count        : faces with a non-null embedding (should be in FAISS)
+      - faiss_live_count     : vectors actually in the live index
+      - faiss_ids_count      : id-list length (must equal live_count or recovery trims)
+      - drift                : db_face_count - faiss_live_count
+                               > 0  => faces missing from FAISS (the corruption path)
+                               < 0  => extra FAISS vectors w/o DB rows (orphans)
+      - index_trained        : IVF must be trained or adds are postponed and
+                               faces silently never become searchable
+      - outbox               : status breakdown; 'failed' or large 'pending'/'merging'
+                               backlog indicates the reaper is not keeping up
+      - healthy              : True only if drift==0, index trained, no failed rows,
+                               and ids/live counts agree
+      - message              : human-readable summary; actionable failure first
+
+    When unhealthy with drift>0, the remedy is scripts/faiss_rebuild_from_db.py.
+    """
+    DRIFT_TOLERANCE = 0  # exact match expected; staging is counted separately below
+
+    reaper = getattr(request.app.state, "faiss_reaper", None)
+    faiss_index = getattr(reaper, "faiss_index", None) if reaper is not None else None
+
+    # DB side: faces that SHOULD be searchable (have an embedding).
+    db_face_count = db.query(func.count(Face.id)).filter(
+        Face.embedding_vec.isnot(None)
+    ).scalar() or 0
+
+    if faiss_index is None:
+        # FAISS not reachable (e.g. reaper not yet attached). Report degraded
+        # rather than pretending healthy.
+        return {
+            "healthy": False,
+            "db_face_count": int(db_face_count),
+            "faiss_live_count": None,
+            "faiss_ids_count": None,
+            "faiss_staging_count": None,
+            "drift": None,
+            "index_trained": None,
+            "outbox": {},
+            "message": "WARNING: FAISS index not reachable from app.state; "
+                       "reaper may not be initialized.",
+        }
+
+    # FAISS side. Read these under no lock — they're plain ints/lists and a
+    # transient off-by-staging is acceptable for a health probe. live_count
+    # and len(live_ids) must agree (the merge invariant); report both.
+    faiss_live_count = int(faiss_index.live_count)
+    faiss_ids_count = int(len(faiss_index.live_ids))
+    faiss_staging_count = int(len(faiss_index.staging_ids))
+
+    # IVF train state. HNSW indexes report is_trained=True always; for IVF an
+    # untrained index silently postpones every merge.
+    try:
+        index_trained = bool(faiss_index.live_index.is_trained)
+    except Exception:
+        index_trained = True  # non-IVF or no index attr; treat as trained
+
+    # Outbox backlog by status (cheap GROUP BY). Reuse the reaper helper.
+    try:
+        outbox = reaper.count_by_status()
+    except Exception:
+        outbox = {}
+
+    # Drift accounting. A face is searchable if it's in live OR staging (staging
+    # gets merged on next force_merge). So the corruption signal is:
+    #   db_face_count - (faiss_live_count + faiss_staging_count)
+    searchable = faiss_live_count + faiss_staging_count
+    drift = int(db_face_count - searchable)
+
+    reasons = []
+    if drift > DRIFT_TOLERANCE:
+        reasons.append(
+            f"drift={drift}: {drift} face(s) in DB are missing from FAISS "
+            f"(db={db_face_count}, faiss_live+staging={searchable}). "
+            f"Run scripts/faiss_rebuild_from_db.py to recover."
+        )
+    elif drift < -DRIFT_TOLERANCE:
+        reasons.append(
+            f"drift={drift}: FAISS has {abs(drift)} vector(s) with no DB face "
+            f"(orphans). Index may need rebuild."
+        )
+    if faiss_ids_count != faiss_live_count:
+        reasons.append(
+            f"id/vector mismatch: ids={faiss_ids_count} live={faiss_live_count} "
+            f"(merge crashed mid-write; restart trims ids, or rebuild)."
+        )
+    if not index_trained:
+        reasons.append(
+            f"IVF index UNTRAINED: merges are postponed until staging reaches "
+            f"the training floor; faces are accumulating but NOT searchable. "
+            f"Bootstrap via the IVF migration script."
+        )
+    failed_rows = int(outbox.get("failed", 0))
+    if failed_rows > 0:
+        reasons.append(
+            f"outbox has {failed_rows} 'failed' row(s) (exceeded max_attempts); "
+            f"these faces are not in FAISS. Inspect last_error and re-drive."
+        )
+
+    healthy = len(reasons) == 0
+    if healthy:
+        message = (
+            f"FAISS healthy. db={db_face_count} live={faiss_live_count} "
+            f"staging={faiss_staging_count} drift=0 trained={index_trained}."
+        )
+    else:
+        message = "WARNING: " + "; ".join(reasons)
+
+    return {
+        "healthy": bool(healthy),
+        "db_face_count": int(db_face_count),
+        "faiss_live_count": faiss_live_count,
+        "faiss_ids_count": faiss_ids_count,
+        "faiss_staging_count": faiss_staging_count,
+        "drift": drift,
+        "index_trained": bool(index_trained),
+        "outbox": {k: int(v) for k, v in outbox.items()},
+        "message": message,
+    }

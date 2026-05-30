@@ -1,3 +1,10 @@
+-- !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+-- ONE-TIME SCRIPT — ALREADY RAN 2026-05-27. DO NOT RUN AGAIN.
+-- Re-running will create duplicate audit rows and may delete
+-- images.failed rows introduced after the original run date.
+-- Kept for forensic reference only.
+-- !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+--
 -- Phase C orphan cleanup: delete the 54,044 inert rows that orphan recovery
 -- marked status='failed' with error_message='recovery: ...' because they had
 -- face_count=0 and never finished processing. They have no FK children

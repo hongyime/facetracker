@@ -6,7 +6,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from pgvector.sqlalchemy import Vector
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 import numpy as np
 
@@ -30,8 +30,8 @@ class Image(Base):
     is_video = Column(Boolean, default=False)
     video_frames = Column(Integer, default=0)
     face_count = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     faces = relationship("Face", back_populates="image", cascade="all, delete-orphan")
 
@@ -90,7 +90,7 @@ class Face(Base):
     frame_number = Column(Integer)
     video_path = Column(Text)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     image = relationship("Image", back_populates="faces")
     identity_mappings = relationship("FaceIdentityMap", back_populates="face", cascade="all, delete-orphan")
@@ -115,8 +115,8 @@ class Identity(Base):
     # Cluster centroid embedding
     centroid_embedding = Column(Vector(512))
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     face_mappings = relationship("FaceIdentityMap", back_populates="identity", cascade="all, delete-orphan")
     audit_logs = relationship("VerificationAudit", back_populates="identity", cascade="all, delete-orphan")
@@ -135,7 +135,7 @@ class FaceIdentityMap(Base):
     assigned_by = Column(String(50))  # auto, user, merge
     confidence = Column(Float)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     face = relationship("Face", back_populates="identity_mappings")
     identity = relationship("Identity", back_populates="face_mappings")
@@ -154,13 +154,25 @@ class VerificationAudit(Base):
     user_id = Column(String(100))
     reason = Column(Text)
     
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     
     identity = relationship("Identity", back_populates="audit_logs")
 
 
 class FileManifest(Base):
-    """File manifest for tracking processed files."""
+    """File manifest for tracking processed files.
+
+    NOTE: This table was created speculatively but has 0 rows in production
+    (verified 2026-05-30). FileManifestManager uses a JSON file instead:
+    src/discovery/manifest.py. The table schema is kept so SQLAlchemy
+    create_all() doesn't error, but it is NOT the live manifest.
+
+    If you want to migrate the manifest to Postgres:
+      1. Wire FileManifestManager.needs_processing() to query this table.
+      2. Wire add_file() / mark_deleted() / save_manifest() to INSERT/UPDATE.
+      3. Backfill from the JSON file on first boot.
+      4. Drop the JSON manifest after backfill verified.
+    """
     
     __tablename__ = "file_manifest"
     
@@ -173,10 +185,10 @@ class FileManifest(Base):
     # Processing status
     is_processed = Column(Boolean, default=False)
     is_deleted = Column(Boolean, default=False)
-    last_checked = Column(DateTime, default=datetime.utcnow)
+    last_checked = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     __table_args__ = (
         Index("idx_file_manifest_path", "file_path"),
@@ -210,8 +222,8 @@ class OneDriveFile(Base):
     original_size = Column(Integer)
     downloaded_size = Column(Integer)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 # Database connection management

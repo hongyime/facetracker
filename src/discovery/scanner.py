@@ -10,6 +10,9 @@ from dataclasses import dataclass
 import json
 
 from src.config import Settings
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 # Sentinel object used by the producer threads to tell the consumer
@@ -126,9 +129,9 @@ class DriveScanner:
                     # consumer to drain.
                     record_queue.put(record)
             except Exception as e:
-                # Match the previous swallow-and-print behavior so a single
+                # Match the previous swallow behavior so a single
                 # drive failure doesn't take down the whole scan.
-                print(f"Error scanning {path}: {e}")
+                logger.error(f"Error scanning {path}: {e}")
             finally:
                 # Sentinel signals "this producer is done". Consumer
                 # counts sentinels to know when all drives have finished.
@@ -228,9 +231,9 @@ class DriveScanner:
                         continue
                         
         except PermissionError:
-            print(f"Permission denied: {drive_path}")
+            logger.warning(f"Permission denied scanning: {drive_path}")
         except Exception as e:
-            print(f"Error scanning {drive_path}: {e}")
+            logger.error(f"Error scanning {drive_path}: {e}")
     
     def _scandir_recursive(self, path: str) -> Generator[tuple, None, None]:
         """

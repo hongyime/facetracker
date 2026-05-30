@@ -1,15 +1,15 @@
 """Main FastAPI application for Face Tracker."""
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-import redis
 
 from src.config import settings, get_settings
 from src.utils.logging import setup_logging, get_logger
 from src.storage.database import get_database, Base
 from src.storage.faiss_index import BatchedFAISSIndex
 from src.storage.outbox import FaissReaper, FaissOutbox  # noqa: F401  (FaissOutbox import ensures table is registered with Base)
+from src.engine.detector import FaceDetector
 from src.pipeline.processor import PipelineProcessor
 from src.discovery.manifest import FileManifestManager
 from src.discovery.watcher import FileWatcher
@@ -93,6 +93,8 @@ async def lifespan(app: FastAPI):
     )
     reaper.start()
     app.state.faiss_reaper = reaper
+    app.state.faiss_index = faiss_index   # shared ref — search routes must use this, not load from disk
+    app.state.detector = FaceDetector()   # single detector instance shared across search routes
 
     # 4. Pipeline processor — does NOT touch FAISS directly anymore;
     #    writes go through the outbox.
@@ -104,6 +106,9 @@ async def lifespan(app: FastAPI):
 
     # 5. Discovery + indexing manager (workers open per-file Sessions)
     manifest = FileManifestManager(settings)
+    # Wire the DB engine so needs_processing() queries the images table
+    # (authoritative, restart-resilient) instead of the JSON manifest alone.
+    manifest.wire_db(db.engine)
     watcher = FileWatcher(settings)
     app.state.indexing_manager = IndexingManager(
         config=settings,
@@ -148,6 +153,9 @@ app = FastAPI(
 )
 
 # Configure CORS
+# SECURITY: allow_credentials=True requires origins to remain localhost-only.
+# Widening allow_origins (e.g. to a tailnet hostname) with credentials=True
+# enables CSRF — review both settings together if origins ever change.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5454", "http://localhost:3000", "http://localhost:8700", "http://localhost:8701", "http://127.0.0.1:5454", "http://127.0.0.1:8700", "http://127.0.0.1:8701"],
@@ -175,9 +183,68 @@ async def root():
 
 
 @app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy"}
+async def health_check(request: Request):
+    """Real health check — probes DB, FAISS index, and outbox backlog.
+
+    Returns HTTP 200 if all components are healthy, 503 otherwise.
+    Designed to be polled by docker healthcheck and ops dashboards.
+    Never raises — always returns a structured payload so callers
+    can diagnose which component failed.
+    """
+    from fastapi.responses import JSONResponse
+    from sqlalchemy import text
+
+    checks: dict = {}
+    overall_ok = True
+
+    # 1. Postgres — lightweight SELECT 1
+    try:
+        _db = get_database(settings.database_url)
+        with _db.engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        checks["postgres"] = "ok"
+    except Exception as e:
+        checks["postgres"] = f"error: {e}"
+        overall_ok = False
+
+    # 2. FAISS index — confirm it's loaded and has vectors
+    try:
+        fi = getattr(request.app.state, "faiss_index", None)
+        if fi is None:
+            checks["faiss"] = "not_initialized"
+            overall_ok = False
+        else:
+            checks["faiss"] = {
+                "status": "ok",
+                "live_count": fi.live_count,
+                "staging_count": len(fi.staging_ids),
+                "index_trained": getattr(fi.live_index, "is_trained", True),
+            }
+    except Exception as e:
+        checks["faiss"] = f"error: {e}"
+        overall_ok = False
+
+    # 3. Outbox backlog — pending rows that haven't been picked up by reaper
+    try:
+        _db2 = get_database(settings.database_url)
+        with _db2.engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT COUNT(*) FROM faiss_outbox WHERE status = 'pending'")
+            ).fetchone()
+            pending_outbox = int(row[0]) if row else 0
+        checks["outbox_pending"] = pending_outbox
+        # Warn (not fail) if backlog is unusually large — reaper may be stuck
+        if pending_outbox > 50000:
+            checks["outbox_warning"] = f"large backlog: {pending_outbox} pending rows"
+    except Exception as e:
+        checks["outbox_pending"] = f"error: {e}"
+        # outbox query failure doesn't fail health — DB check above catches real DB issues
+
+    status_code = 200 if overall_ok else 503
+    return JSONResponse(
+        content={"status": "healthy" if overall_ok else "degraded", "checks": checks},
+        status_code=status_code,
+    )
 
 
 if __name__ == "__main__":

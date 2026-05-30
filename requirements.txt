@@ -32,7 +32,7 @@ umap-learn>=0.5.5
 scikit-learn>=1.4.0
 
 # Cache
-redis>=5.0.0
+# redis removed — never wired into any code path
 
 # File Discovery
 watchdog>=4.0.0

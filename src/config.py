@@ -86,7 +86,7 @@ class Settings(BaseSettings):
     #   "IVFFlat" - clustered inverted-file index (O(1) add, smaller writes,
     #               viable to millions). Switch via config + run the
     #               scripts/faiss_migrate_ivf.py migration once.
-    faiss_index_type: str = "HNSW64"
+    faiss_index_type: str = "IVFFlat"  # production uses IVFFlat; HNSW64 retained as fallback option
     # IVFFlat tuning. Only used when faiss_index_type == "IVFFlat".
     #   nlist : number of Voronoi cells. Rule of thumb K = 4*sqrt(N).
     #           512 is appropriate for ~16k-64k vectors. Bump to 4096 once
@@ -113,9 +113,9 @@ class Settings(BaseSettings):
     
     # Indexing
     watch_mode: bool = True
-    watch_poll_interval: int = 30
+    watch_poll_interval: int = 30  # minutes between full drive scans; manager.py multiplies by 60
     index_queue_size: int = 50
-    index_workers: int = 2
+    index_workers: int = 1  # ONNX intra-op pool saturates CPU at workers>1 on 4-core hardware; benchmark before increasing
     
     # Clustering
     cluster_min_size: int = 5
@@ -127,18 +127,16 @@ class Settings(BaseSettings):
     # Search
     search_top_k: int = 100
     search_min_similarity: float = 0.6
-    search_cache_enabled: bool = True
-    
+    # search_cache_enabled / redis_host / redis_port removed — Redis was never
+    # wired into any code path. Remove redis container from docker-compose
+    # if caching is not being implemented.
+   
     # Database
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_db: str = "facetracker"
     postgres_user: str = "postgres"
     postgres_password: str = "changeme"
-    
-    # Redis
-    redis_host: str = "localhost"
-    redis_port: int = 6379
     
     # Dashboard
     dashboard_port: int = 5151
@@ -186,11 +184,6 @@ class Settings(BaseSettings):
             f"postgresql://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
-    
-    @property
-    def redis_url(self) -> str:
-        """Get Redis URL."""
-        return f"redis://{self.redis_host}:{self.redis_port}"
     
     @property
     def thumbnail_cache_path(self) -> str:

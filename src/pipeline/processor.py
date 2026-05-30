@@ -8,6 +8,7 @@ import threading
 import uuid
 
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from src.utils.logging import get_logger
 from src.readers.image_reader import ImageReader
@@ -544,7 +545,31 @@ class PipelineProcessor:
                     onedrive_revert_pending=is_onedrive,
                 )
                 session.add(image_record)
-                session.flush()  # populate image_record.id
+                try:
+                    session.flush()  # populate image_record.id
+                except IntegrityError:
+                    # Race: another worker beat us to INSERT for the same
+                    # file_path (possible at index_workers > 1). Roll back
+                    # the failed flush so the session is usable, then fall
+                    # through to the UPDATE path — the other worker's row
+                    # is now the authoritative one and we just need to
+                    # attach our faces to it.
+                    session.rollback()
+                    image_record = (
+                        session.query(Image)
+                        .filter(Image.file_path == file_path_str)
+                        .first()
+                    )
+                    if image_record is None:
+                        # Extremely unlikely — means the race-winning row
+                        # was deleted between our flush and this re-query.
+                        raise RuntimeError(
+                            f"file_path UniqueViolation race but row vanished: {file_path_str}"
+                        )
+                    logger.warning(
+                        "file_path INSERT race resolved via UPDATE path",
+                        file_path=file_path_str,
+                    )
             else:
                 # In-place update. Clearing error_message is important — the
                 # row may have carried a stale "recovery: ..." note from

@@ -164,9 +164,13 @@ class IndexingManager:
         # Wait for threads to finish
         if self._scan_thread:
             self._scan_thread.join(timeout=5)
+            if self._scan_thread.is_alive():
+                logger.warning("ScannerThread did not exit within 5s — may still be running")
             
         for t in self._worker_threads:
             t.join(timeout=5)
+            if t.is_alive():
+                logger.warning(f"Worker thread {t.name} did not exit within 5s")
             
         self._worker_threads.clear()
         logger.info("Indexing Manager stopped")
@@ -354,8 +358,13 @@ class IndexingManager:
                                 if root:
                                     self.per_drive[root]["queued"] += 1
                             except queue.Full:
-                                # This shouldn't happen much with blocks, but just in case
-                                pass
+                                # Queue saturated — file will be retried on next scan cycle.
+                                # Log at warning level so it's visible; do NOT increment
+                                # files_queued so the invariant queued <= discovered holds.
+                                logger.warning(
+                                    "Processing queue full, deferring file to next scan cycle",
+                                    path=record.path,
+                                )
                                 
                 logger.info(
                     f"Drive scan completed. Discovered {self.files_discovered} files, "
@@ -363,10 +372,11 @@ class IndexingManager:
                     f"(skipped {self.files_discovered - self.files_queued} unchanged)."
                 )
                 self.last_scan_completed = datetime.now()
+                self._scan_error_backoff = 60  # reset on successful scan
                 self.is_scanning = False
                 
                 # Wait for next scan
-                wait_time = self.config.watch_poll_interval * 60  # convert to seconds
+                wait_time = self.config.watch_poll_interval * 60  # config unit is minutes
                 for _ in range(int(wait_time)):
                     if self._stop_event.is_set():
                         break
@@ -375,7 +385,15 @@ class IndexingManager:
             except Exception as e:
                 logger.error(f"Error in scan loop: {e}")
                 self.is_scanning = False
-                time.sleep(60)  # Wait before retry
+                # Exponential backoff: 60s → 120s → 240s → 480s → cap at 600s.
+                # Avoids hammering a broken DB or full disk every minute.
+                _backoff = getattr(self, "_scan_error_backoff", 60)
+                logger.info(f"Scan loop retry in {_backoff}s")
+                for _ in range(_backoff):
+                    if self._stop_event.is_set():
+                        break
+                    time.sleep(1)
+                self._scan_error_backoff = min(_backoff * 2, 600)
                 
     def _recover_pending_images(self) -> None:
         """One-shot recovery for orphaned `images.status='pending'` rows.
@@ -448,7 +466,11 @@ class IndexingManager:
                     and getattr(self.processor, "faiss_index", None) is not None
                     and hasattr(self.processor.faiss_index, "live_ids_set")
                 ):
-                    live = set(self.processor.faiss_index.live_ids_set)
+                    fi = self.processor.faiss_index
+                    # Take snapshot under merge_lock so we don't read a partially
+                    # updated set while a merge is publishing new IDs.
+                    with fi.merge_lock:
+                        live = set(fi.live_ids_set)
 
                 BATCH = 500
                 last_id = 0

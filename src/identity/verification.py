@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Callable, Optional
 from collections import deque
@@ -40,7 +40,7 @@ class VerificationTask:
     action: VerificationAction
     priority: VerificationPriority
     metadata: dict = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     status: str = "pending"  # pending, processing, completed, failed
 
 
@@ -104,7 +104,7 @@ class VerificationQueue:
         Returns:
             Task ID for tracking.
         """
-        task_id = f"task_{datetime.utcnow().timestamp()}_{len(self._queue)}"
+        task_id = f"task_{datetime.now(timezone.utc).timestamp()}_{len(self._queue)}"
         
         task = VerificationTask(
             task_id=task_id,
@@ -213,7 +213,7 @@ class VerificationQueue:
             details: Additional details.
         """
         entry = AuditLogEntry(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             action=action,
             identity_id=identity_id,
             face_ids=face_ids,

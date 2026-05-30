@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 import numpy as np
@@ -64,7 +64,7 @@ class FaissOutbox(Base):
     status = Column(String(16), nullable=False, default="pending")
     attempts = Column(Integer, nullable=False, default=0)
     last_error = Column(Text)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
     claimed_at = Column(DateTime)
     committed_at = Column(DateTime)
 

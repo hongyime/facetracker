@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import numpy as np
 
 from .engine import SearchResult
@@ -70,7 +70,7 @@ class RankingStrategy:
             List of RankedResult objects sorted by ranking score
         """
         if reference_date is None:
-            reference_date = datetime.utcnow()
+            reference_date = datetime.now(timezone.utc)
         
         ranked_results = []
         
