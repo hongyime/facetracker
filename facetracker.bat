@@ -61,11 +61,14 @@ echo  14.  Cluster faces - incremental (assign new faces only, safe)
 echo  15.  Cluster faces - dry-run @ 0.6 (preview, no DB writes)
 echo  16.  Cluster faces - FULL re-cluster @ 0.6 (destructive, prompts)
 echo  17.  FAISS auto-tune nlist (re-train if corpus grew, prompts)
-echo  18.  Backup snapshot now (writes to Y:\facetracker_backups)
+echo  18.  Backup snapshot now (writes to Y:\facetracker\backups)
 echo  19.  Show last 20 backup log lines
 echo  20.  OneDrive footprint check (verify ingested files still cloud-only)
 echo  21.  OneDrive eviction - run now (drains revert_pending queue)
 echo  22.  OneDrive eviction - last 20 log lines
+echo  23.  OneDrive audit - re-flag stragglers (verifies eviction completed)
+echo  24.  OneDrive audit - last 20 log lines
+echo  25.  OneDrive orphan report (DB rows for files that no longer exist)
 echo.
 echo   0.  Exit
 echo.
@@ -93,6 +96,9 @@ if "%CHOICE%"=="19" goto backup_log
 if "%CHOICE%"=="20" goto onedrive_check
 if "%CHOICE%"=="21" goto onedrive_evict
 if "%CHOICE%"=="22" goto onedrive_evict_log
+if "%CHOICE%"=="23" goto onedrive_audit
+if "%CHOICE%"=="24" goto onedrive_audit_log
+if "%CHOICE%"=="25" goto onedrive_orphans
 if "%CHOICE%"=="0"  goto end
 goto menu
 
@@ -218,21 +224,21 @@ echo.
 echo To actually rebuild, the api MUST be stopped first. The script refuses
 echo to swap files while the api is up. Stop api manually then run:
 echo     docker run --rm --env-file .env --network facetracker-net ^
-echo         -v "C:/facetracker:/app" -v "Y:/faces:/app/storage" -w /app ^
+echo         -v "C:/facetracker:/app" -v "Y:/facetracker/faces:/app/storage" -w /app ^
 echo         facetracker-api python scripts/faiss_autotune_nlist.py --confirm-and-swap
 goto pause_return
 
 :backup_now
 echo.
-echo [backup] running snapshot to Y:\facetracker_backups (keeps newest 4)...
+echo [backup] running snapshot to Y:\facetracker\backups (keeps newest 4)...
 call "%~dp0scripts\backup_snapshot.bat"
 goto pause_return
 
 :backup_log
 echo.
-echo [backup] last 20 lines of Y:\facetracker_backups\backup.log:
-if exist "Y:\facetracker_backups\backup.log" (
-    powershell -NoProfile -Command "Get-Content 'Y:\facetracker_backups\backup.log' -Tail 20"
+echo [backup] last 20 lines of Y:\facetracker\backups\backup.log:
+if exist "Y:\facetracker\backups\backup.log" (
+    powershell -NoProfile -Command "Get-Content 'Y:\facetracker\backups\backup.log' -Tail 20"
 ) else (
     echo   ^(no log yet - run option 18 at least once^)
 )
@@ -262,6 +268,30 @@ if exist "%~dp0logs\onedrive_evict.log" (
 ) else (
     echo   ^(no log yet - run option 21 at least once^)
 )
+goto pause_return
+
+:onedrive_audit
+echo.
+echo [onedrive] running audit pass (verifies eviction actually completed; re-flags stragglers)...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\onedrive_audit.ps1"
+goto pause_return
+
+:onedrive_audit_log
+echo.
+echo [onedrive] last 20 lines of onedrive_audit.log:
+echo.
+if exist "%~dp0logs\onedrive_audit.log" (
+    powershell -NoProfile -Command "Get-Content '%~dp0logs\onedrive_audit.log' -Tail 20"
+) else (
+    echo   ^(no log yet - run option 23 at least once^)
+)
+goto pause_return
+
+:onedrive_orphans
+echo.
+echo [onedrive] scanning DB for OneDrive paths whose files no longer exist...
+echo            ^(read-only; writes CSV to logs\onedrive_orphans.csv^)
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\onedrive_orphan_report.ps1" -CsvPath "%~dp0logs\onedrive_orphans.csv"
 goto pause_return
 
 

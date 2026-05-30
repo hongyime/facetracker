@@ -45,7 +45,7 @@ services:
       - REDIS_PORT=6379
       - FACE_STORAGE_ROOT=/app/storage
     volumes:
-      - ${HOST_FACE_STORAGE:-Y:/faces}:/app/storage:rw
+      - ${HOST_FACE_STORAGE:-Y:/facetracker/faces}:/app/storage:rw
       - ${APP_ROOT:-C:/facetracker}:/app/code:ro
       - ${APP_ROOT:-C:/facetracker}/src:/app/src:ro
       - model_cache:/root/.insightface/models
