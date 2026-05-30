@@ -4,6 +4,7 @@ import numpy as np
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
+import threading
 import uuid
 
 from sqlalchemy.orm import Session
@@ -143,13 +144,22 @@ class PipelineProcessor:
         
         # Ensure thumbnail cache directory exists
         self.thumbnail_cache_path.mkdir(parents=True, exist_ok=True)
-        
+
+        # Serialize video processing across worker threads. Unlike image
+        # processing (which is naturally safe per-call), video processing
+        # mutates self.face_tracker state via reset()/update() across many
+        # frames in one call. Two workers processing two videos concurrently
+        # would corrupt DeepSORT's frame_count / active_tracks dict and
+        # produce wrong track IDs. Image processing does NOT use the
+        # tracker, so it stays parallel.
+        self._video_lock = threading.Lock()
+
         logger.info("PipelineProcessor initialized")
 
     def _check_storage_alive(self) -> bool:
         """Check if critical storage root is still available."""
         # Use thumbnail_cache_path as proxy for storage root availability
-        # In a real environment, this is Y:\faces
+        # In a real environment, this is Y:\facetracker\faces
         if not self.thumbnail_cache_path.parent.exists():
             logger.error(f"CRITICAL: Storage root {self.thumbnail_cache_path.parent} not found! Pausing operations.")
             return False
@@ -308,13 +318,25 @@ class PipelineProcessor:
     def _process_video(self, file_path: Path, result: ProcessingResult):
         """Process a video file with tracking at 1 FPS.
 
+        Acquires self._video_lock for the duration. With INDEX_WORKERS>1,
+        two workers could otherwise enter this method concurrently and
+        corrupt the shared face_tracker state (frame_count, active_tracks)
+        because face_tracker.reset() resets it to zero on entry. Image
+        processing does NOT use the tracker, so it stays parallel.
+        """
+        result.is_video = True
+
+        with self._video_lock:
+            self._process_video_locked(file_path, result)
+
+    def _process_video_locked(self, file_path: Path, result: ProcessingResult):
+        """Locked body of _process_video. See _process_video for rationale.
+
         For each track, we keep the BEST-quality frame (by detector quality
         score, matched to the tracker bbox via IoU). On finalization we
         re-detect on that best frame and pull the embedding from the
-        detection that overlaps the track — never blindly index 0.
+        detection that overlaps the track - never blindly index 0.
         """
-        result.is_video = True
-        
         # Reset tracker for new video
         self.face_tracker.reset()
         

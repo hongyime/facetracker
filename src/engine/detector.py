@@ -1,5 +1,6 @@
 """Face detection module using InsightFace RetinaFace."""
 
+import threading
 import numpy as np
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
@@ -81,7 +82,18 @@ class FaceDetector:
             allowed_modules=['detection', 'landmarks', 'recognition']
         )
         self.app.prepare(ctx_id=0, det_size=(640, 640))
-        
+
+        # Serialize calls to self.app.get(image). InsightFace's FaceAnalysis
+        # wraps onnxruntime sessions but its Python-side state (det_size,
+        # last-frame caches, etc.) is not documented as thread-safe. With
+        # INDEX_WORKERS>1 multiple worker threads call detect() concurrently;
+        # this lock makes inference serialized. The actual win from multiple
+        # workers comes from overlapping NON-inference work (9p file reads,
+        # image decode, thumbnail write, DB commit) - those happen OUTSIDE
+        # this lock. Expected speedup ~1.3-1.6x over single-worker even with
+        # serialized inference.
+        self._detect_lock = threading.Lock()
+
         self.quality_scorer = QualityScorer()
         logger.info("FaceDetector initialized")
 
@@ -101,8 +113,11 @@ class FaceDetector:
             height, width = image.shape[:2]
             image_area = height * width
 
-            # Run detection
-            faces = self.app.get(image)
+            # Run detection. Serialized via _detect_lock so concurrent
+            # worker threads can't race inside InsightFace's Python wrapper.
+            # See _detect_lock initialization in __init__ for rationale.
+            with self._detect_lock:
+                faces = self.app.get(image)
 
             results = []
             for face in faces:

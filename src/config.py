@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     
     # Storage Paths — accept HOST_FACE_STORAGE (.env) or FACE_STORAGE_ROOT (.env.example) for back-compat
     face_storage_root: str = Field(
-        default="Y:/faces",
+        default="Y:/facetracker/faces",
         validation_alias=AliasChoices("FACE_STORAGE_ROOT", "HOST_FACE_STORAGE"),
     )
     postgres_data_path: str = "./postgres_data"
@@ -29,6 +29,34 @@ class Settings(BaseSettings):
     # Drive Sources
     drive_sources: List[DriveSource] = []
     exclude_paths: List[str] = []
+    # Directory-name blacklist (case-insensitive). Unlike `exclude_paths`
+    # which is a prefix match against the full file path, these match the
+    # last path segment regardless of where it appears in the tree. Use
+    # for known-junk directories that scatter throughout drives:
+    # OS metadata (.thumbnails, __MACOSX, @eaDir), browser/app caches,
+    # framework artifacts (node_modules, .git already covered separately
+    # via path containment but explicit here is faster).
+    exclude_dir_names: List[str] = [
+        ".thumbnails",
+        ".thumbs",
+        "__MACOSX",
+        "@eaDir",          # Synology NAS metadata
+        ".Trash-1000",
+        ".Trash",
+        ".trashes",
+        ".DS_Store",
+        "Thumbs.db",
+        ".cache",
+        ".tmp",
+        "Temporary Internet Files",
+    ]
+
+    # Smallest file we'll consider for face detection. Below this is
+    # almost always icons, sprites, favicons, sidecars, .DS_Store,
+    # Plex metadata thumbnails, etc. Plex covers are ~30-80 KB so 4 KB
+    # is well below any real cover and well above all known junk.
+    # 0 disables the filter.
+    min_file_size_bytes: int = 4096
     
     # Media Formats
     supported_images: str = ".jpg,.jpeg,.png,.webp,.gif,.bmp,.heic,.heif,.tiff,.tif"

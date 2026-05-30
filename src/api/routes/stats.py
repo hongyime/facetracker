@@ -47,10 +47,22 @@ async def get_scan_progress(request: Request) -> Dict[str, Any]:
     return {
         "is_scanning": False,
         "current_file": None,
+        # Legacy aliases (kept for dashboard JS).
         "files_scanned": 0,
         "files_total": 0,
+        # Three-counter view (3A).
+        "files_discovered": 0,
+        "files_queued": 0,
+        "files_skipped": 0,
+        "files_processed": 0,
+        "files_failed": 0,
         "progress_percent": 0,
         "eta_seconds": None,
+        "per_drive": {},
+        "queue_depth": 0,
+        "queue_high_water_mark": 0,
+        "processing_rate_per_sec": None,
+        "processing_eta_seconds": None,
     }
 
 @router.get("/onedrive")
@@ -63,14 +75,29 @@ async def get_onedrive_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
                       onedrive_evict.ps1 daemon should drain these hourly)
     - evict_log_age_seconds: how long ago the daemon last ran. None if
                              the log file doesn't exist.
-    - evict_healthy: True if pending=0 OR daemon ran in last 6h.
+    - audit_log_age_seconds: how long ago the auditor last ran (verifies
+                             eviction actually completed; runs every 6h).
+    - evict_healthy: True if (pending<=threshold) AND (daemon ran in last 6h)
+                     AND (auditor ran in last 30h). False if any signal is
+                     stale or pending grew past the threshold (indicates
+                     daemon is firing but OneDrive is rejecting evictions).
 
     Dashboard surfaces unhealthy state as a banner so we don't silently
-    accumulate C: drive bloat.
+    accumulate C: drive bloat or let the auditor go dormant.
     """
     from sqlalchemy import or_
     import os as _os
     import time as _time
+
+    # Tunable: number of pending rows beyond which the eviction daemon is
+    # presumed unable to keep up. At 17k faces / 14k identities the steady
+    # state is ~0; a single ingest wave bumps this temporarily. 100 is a
+    # large enough headroom that one batch ingest won't trip the alarm,
+    # and small enough that a real failure mode (signals fired but
+    # OneDrive rejecting them) shows within ~2 hourly runs.
+    PENDING_CEILING = 100
+    EVICT_STALE_SECONDS = 21600  # 6h (daemon runs hourly; allow several misses)
+    AUDIT_STALE_SECONDS = 108000  # 30h (auditor runs 6-hourly; allow >1 miss)
 
     ingested = db.query(func.count(Image.id)).filter(
         or_(
@@ -83,31 +110,54 @@ async def get_onedrive_stats(db: Session = Depends(get_db)) -> Dict[str, Any]:
         Image.onedrive_revert_pending == True  # noqa: E712
     ).scalar() or 0
 
-    evict_log = "/mnt/c/facetracker/logs/onedrive_evict.log"
-    evict_age = None
-    if _os.path.exists(evict_log):
+    def _log_age(path: str):
+        if not _os.path.exists(path):
+            return None
         try:
-            evict_age = int(_time.time() - _os.path.getmtime(evict_log))
+            return int(_time.time() - _os.path.getmtime(path))
         except OSError:
-            evict_age = None
+            return None
 
-    # Healthy if either: no work pending, OR daemon ran recently.
-    healthy = (pending == 0) or (evict_age is not None and evict_age < 21600)
+    evict_age = _log_age("/mnt/c/facetracker/logs/onedrive_evict.log")
+    audit_age = _log_age("/mnt/c/facetracker/logs/onedrive_audit.log")
+
+    # Compose health signal. Order matters for the message: most actionable
+    # failure first.
+    reasons = []
+    if pending > PENDING_CEILING:
+        reasons.append(
+            f"pending={pending} exceeds ceiling={PENDING_CEILING} "
+            f"(daemon firing but evictions not landing; check OneDrive sync state)"
+        )
+    if evict_age is None or evict_age > EVICT_STALE_SECONDS:
+        reasons.append(
+            f"eviction daemon stale (last_run={evict_age}s ago, threshold={EVICT_STALE_SECONDS}s); "
+            f"check FacetrackerOneDriveEvict scheduled task"
+        )
+    if audit_age is None or audit_age > AUDIT_STALE_SECONDS:
+        reasons.append(
+            f"audit daemon stale (last_run={audit_age}s ago, threshold={AUDIT_STALE_SECONDS}s); "
+            f"check FacetrackerOneDriveAudit scheduled task"
+        )
+
+    healthy = len(reasons) == 0
+
+    if healthy:
+        message = (
+            f"OneDrive eviction daemon healthy. {pending} pending, "
+            f"evict last_run={evict_age}s ago, audit last_run={audit_age}s ago."
+        )
+    else:
+        message = "WARNING: " + "; ".join(reasons)
 
     return {
         "ingested_count": int(ingested),
         "revert_pending": int(pending),
         "evict_log_age_seconds": evict_age,
+        "audit_log_age_seconds": audit_age,
         "evict_healthy": bool(healthy),
-        "message": (
-            f"OneDrive eviction daemon healthy. {pending} pending, "
-            f"last run {evict_age}s ago."
-            if healthy else
-            f"WARNING: {pending} OneDrive files awaiting eviction. "
-            f"Daemon last ran {evict_age}s ago "
-            "(threshold 6h). Schedule scripts/onedrive_evict.ps1 in "
-            "Task Scheduler or run manually to prevent C: bloat."
-        ),
+        "pending_ceiling": PENDING_CEILING,
+        "message": message,
     }
 
 @router.get("/recent-activity")
