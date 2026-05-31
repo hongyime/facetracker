@@ -218,6 +218,18 @@ class DriveScanner:
                         # disables this filter.
                         if self.min_file_size_bytes and stat.st_size < self.min_file_size_bytes:
                             continue
+                        # Skip OneDrive cloud-only placeholders.
+                        # When a file is stored in the cloud but not downloaded
+                        # locally, Windows/NTFS reports its full st_size but
+                        # allocates zero disk blocks. Reading such a file forces
+                        # OneDrive to hydrate (download) it, which triggers
+                        # Explorer to pop a folder window for the path.
+                        # st_blocks==0 on a non-empty file from Linux is the
+                        # most reliable no-shell-out detector for this state.
+                        # Directories always have st_blocks==0 on NTFS-via-FUSE
+                        # so we only apply this guard to files (st_size > 0).
+                        if stat.st_size > 0 and getattr(stat, "st_blocks", -1) == 0:
+                            continue
                         yield FileRecord(
                             path=str(file_path),
                             size=stat.st_size,
