@@ -150,10 +150,15 @@ class FaissReaper:
     # --- main loop ---
 
     def _run(self) -> None:
+        tick = 0
         while not self._stop.is_set():
             try:
                 self._reclaim_stuck()
                 drained = self._drain_once()
+                tick += 1
+                # Prune committed rows every ~100 ticks (~50s at default poll).
+                if tick % 100 == 0:
+                    self._prune_committed()
                 if drained == 0:
                     self._stop.wait(self.poll_interval_s)
             except Exception:  # noqa: BLE001
@@ -291,6 +296,42 @@ class FaissReaper:
 
         logger.info("FaissReaper committed %d rows", len(rows))
         return len(rows)
+
+    # --- retention ---
+
+    def _prune_committed(self) -> int:
+        """Delete committed outbox rows older than retention_days.
+
+        Each committed row carries a redundant 2KB embedding blob already
+        stored in faces.embedding_vec. At 17k faces that's ~35MB of dead
+        weight; it grows linearly and the rows serve no purpose after
+        commitment. Only deletes status='committed'; never touches
+        pending/merging/failed.
+        """
+        RETENTION_DAYS = 7
+        session = self.database.SessionLocal()
+        try:
+            result = session.execute(
+                text(
+                    """
+                    DELETE FROM faiss_outbox
+                     WHERE status = 'committed'
+                       AND committed_at < NOW() - (:days * INTERVAL '1 day')
+                    """
+                ),
+                {"days": RETENTION_DAYS},
+            )
+            session.commit()
+            n = result.rowcount or 0
+            if n:
+                logger.info("FaissReaper pruned %d committed outbox rows (>%dd old)", n, RETENTION_DAYS)
+            return n
+        except Exception:
+            session.rollback()
+            logger.exception("FaissReaper prune failed")
+            return 0
+        finally:
+            session.close()
 
     # --- ops introspection ---
 

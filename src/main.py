@@ -1,6 +1,6 @@
 """Main FastAPI application for Face Tracker."""
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
@@ -15,6 +15,7 @@ from src.discovery.manifest import FileManifestManager
 from src.discovery.watcher import FileWatcher
 from src.discovery.manager import IndexingManager
 from src.api.routes import search, identity, stats, files
+from src.api.auth import require_token
 from pathlib import Path
 
 logger = get_logger(__name__)
@@ -164,11 +165,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(search.router, prefix="/api/v1", tags=["search"])
-app.include_router(identity.router, prefix="/api/v1", tags=["identity"])
-app.include_router(stats.router, prefix="/api/v1", tags=["stats"])
-app.include_router(files.router, prefix="/api/v1", tags=["files"])
+# Include routers — all /api/v1 routes require bearer token when API_TOKEN is set.
+# /health is exempt (no prefix, no auth dependency).
+_api_deps = [Depends(require_token)]
+app.include_router(search.router, prefix="/api/v1", tags=["search"], dependencies=_api_deps)
+app.include_router(identity.router, prefix="/api/v1", tags=["identity"], dependencies=_api_deps)
+app.include_router(stats.router, prefix="/api/v1", tags=["stats"], dependencies=_api_deps)
+app.include_router(files.router, prefix="/api/v1", tags=["files"], dependencies=_api_deps)
 
 
 @app.get("/")
@@ -184,18 +187,25 @@ async def root():
 
 @app.get("/health")
 async def health_check(request: Request):
-    """Real health check — probes DB, FAISS index, and outbox backlog.
+    """Real health check — probes DB, FAISS index, drift, and outbox.
 
     Returns HTTP 200 if all components are healthy, 503 otherwise.
     Designed to be polled by docker healthcheck and ops dashboards.
     Never raises — always returns a structured payload so callers
     can diagnose which component failed.
+
+    Signals surfaced (P1.1 / P4.1):
+      - postgres connectivity
+      - faiss live_count, staging_count, index_trained
+      - db_face_count vs faiss counts → drift (the silent-corruption detector)
+      - outbox backlog by status including failed rows
     """
     from fastapi.responses import JSONResponse
     from sqlalchemy import text
 
     checks: dict = {}
     overall_ok = True
+    degraded_reasons: list = []
 
     # 1. Postgres — lightweight SELECT 1
     try:
@@ -207,38 +217,80 @@ async def health_check(request: Request):
         checks["postgres"] = f"error: {e}"
         overall_ok = False
 
-    # 2. FAISS index — confirm it's loaded and has vectors
+    # 2. FAISS index — confirm it's loaded, report drift and train state
+    db_face_count = None
+    try:
+        _db2 = get_database(settings.database_url)
+        with _db2.engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT COUNT(*) FROM faces WHERE embedding_vec IS NOT NULL")
+            ).fetchone()
+            db_face_count = int(row[0]) if row else 0
+    except Exception:
+        pass
+
     try:
         fi = getattr(request.app.state, "faiss_index", None)
         if fi is None:
             checks["faiss"] = "not_initialized"
             overall_ok = False
         else:
+            faiss_live = fi.live_count
+            faiss_staging = len(fi.staging_ids)
+            index_trained = getattr(fi.live_index, "is_trained", True)
+
+            drift = None
+            if db_face_count is not None:
+                drift = db_face_count - (faiss_live + faiss_staging)
+
             checks["faiss"] = {
                 "status": "ok",
-                "live_count": fi.live_count,
-                "staging_count": len(fi.staging_ids),
-                "index_trained": getattr(fi.live_index, "is_trained", True),
+                "live_count": faiss_live,
+                "staging_count": faiss_staging,
+                "db_face_count": db_face_count,
+                "drift": drift,
+                "index_trained": index_trained,
             }
+
+            if drift is not None and drift > 0:
+                degraded_reasons.append(
+                    f"faiss drift={drift} (faces in DB missing from FAISS)"
+                )
+                overall_ok = False
+            if not index_trained:
+                degraded_reasons.append(
+                    "IVF index untrained — faces not searchable"
+                )
+                overall_ok = False
     except Exception as e:
         checks["faiss"] = f"error: {e}"
         overall_ok = False
 
-    # 3. Outbox backlog — pending rows that haven't been picked up by reaper
+    # 3. Outbox — full status breakdown including failed rows
     try:
-        _db2 = get_database(settings.database_url)
-        with _db2.engine.connect() as conn:
-            row = conn.execute(
-                text("SELECT COUNT(*) FROM faiss_outbox WHERE status = 'pending'")
-            ).fetchone()
-            pending_outbox = int(row[0]) if row else 0
-        checks["outbox_pending"] = pending_outbox
-        # Warn (not fail) if backlog is unusually large — reaper may be stuck
-        if pending_outbox > 50000:
-            checks["outbox_warning"] = f"large backlog: {pending_outbox} pending rows"
+        _db3 = get_database(settings.database_url)
+        with _db3.engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT status, COUNT(*) AS n FROM faiss_outbox GROUP BY status")
+            ).fetchall()
+            outbox = {r.status: int(r.n) for r in rows}
+        checks["outbox"] = outbox
+
+        pending = outbox.get("pending", 0)
+        failed = outbox.get("failed", 0)
+        if pending > 50000:
+            degraded_reasons.append(f"outbox backlog: {pending} pending rows")
+            overall_ok = False
+        if failed > 0:
+            degraded_reasons.append(
+                f"outbox has {failed} failed row(s) — faces not in FAISS"
+            )
+            overall_ok = False
     except Exception as e:
-        checks["outbox_pending"] = f"error: {e}"
-        # outbox query failure doesn't fail health — DB check above catches real DB issues
+        checks["outbox"] = f"error: {e}"
+
+    if degraded_reasons:
+        checks["degraded_reasons"] = degraded_reasons
 
     status_code = 200 if overall_ok else 503
     return JSONResponse(

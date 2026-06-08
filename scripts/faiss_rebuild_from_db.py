@@ -6,6 +6,15 @@ Rebuild the FAISS live index from scratch using face embeddings stored in
 Postgres. Run this whenever the on-disk index is corrupt, missing, or out of
 sync with the database.
 
+IMPORTANT — IVF BOOTSTRAP:
+  A fresh IVFFlat index CANNOT be grown from empty. FAISS requires
+  nlist * 8 training points before the first add(). If you delete the
+  live index file and restart the API, the reaper will accumulate faces
+  in the outbox but they will never become searchable until this script
+  (or faiss_migrate_ivf.py) trains and writes a populated index.
+
+  TL;DR: after any index loss, run this script before restarting the API.
+
 USAGE (inside the api container):
     docker exec -it facetracker-api python /app/scripts/faiss_rebuild_from_db.py
 
@@ -49,7 +58,7 @@ DATABASE_URL = os.environ.get(
 )
 FACE_STORAGE_ROOT = os.environ.get("FACE_STORAGE_ROOT", "/app/storage")
 FAISS_INDEX_TYPE  = os.environ.get("FAISS_INDEX_TYPE", "IVFFlat")
-FAISS_NLIST       = int(os.environ.get("FAISS_NLIST", "100"))
+FAISS_NLIST       = int(os.environ.get("FAISS_NLIST", "512"))
 FAISS_NPROBE      = int(os.environ.get("FAISS_NPROBE", "32"))
 DIMENSION         = 512   # buffalo_l w600k_r50 embedding dimension
 
@@ -91,6 +100,9 @@ def fetch_embeddings(engine):
                 break
             for eid, evec in result:
                 if evec is not None:
+                    if isinstance(evec, str):
+                        import json
+                        evec = json.loads(evec)
                     arr = np.array(evec, dtype=np.float32)
                     if arr.shape == (DIMENSION,):
                         rows.append((eid, arr))

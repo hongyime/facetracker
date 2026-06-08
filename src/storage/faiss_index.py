@@ -119,8 +119,10 @@ class BatchedFAISSIndex:
             (>= nlist * 8 — FAISS minimum recommendation).
 
         For IVFFlat, the migration script `scripts/faiss_migrate_ivf.py`
-        bootstraps a trained index from the existing DB so a fresh boot
-        with the migrated file Just Works.
+        or rebuild script `scripts/faiss_rebuild_from_db.py` bootstraps
+        a trained index from the existing DB so a fresh boot with the
+        migrated file Just Works. A fresh IVF index CANNOT be grown from
+        empty — after index loss, run the rebuild script before restarting.
         """
         index_type = (self.config.faiss_index_type or "HNSW64").upper()
         if index_type == "IVFFLAT":

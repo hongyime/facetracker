@@ -1,5 +1,6 @@
 """File status API routes."""
 
+import os
 from fastapi import APIRouter, HTTPException, Depends
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
@@ -12,9 +13,26 @@ def get_db():
     """Dependency to get database session — request-scoped, pool-safe."""
     yield from get_db_session(settings.database_url)
 
+
+def _validate_file_path(file_path: str) -> str:
+    """Normalize and validate a file_path query parameter.
+
+    Currently file_path is only used as a DB equality filter (no filesystem
+    open), but this guard ensures a future endpoint can't introduce path
+    traversal. Rejects null bytes and relative-path escape sequences.
+    """
+    if "\x00" in file_path:
+        raise HTTPException(status_code=400, detail="Invalid file path: null bytes")
+    normalized = os.path.normpath(file_path)
+    if ".." in normalized.split(os.sep):
+        raise HTTPException(status_code=400, detail="Invalid file path: directory traversal")
+    return file_path
+
+
 @router.get("/status")
 async def get_file_status(file_path: str, db: Session = Depends(get_db)) -> Dict[str, Any]:
     """Get processing status of a specific file."""
+    file_path = _validate_file_path(file_path)
     image = db.query(Image).filter(Image.file_path == file_path).first()
     
     if not image:

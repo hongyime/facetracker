@@ -59,3 +59,7 @@ B6|2026-05-20|UniqueViolation ix_images_file_path: re-insert on rescan|upsert on
 B7|2026-05-20|Plex PhotoTranscoder cache being indexed (ephemeral)|exclude /mnt/c/musicstream/plex; add V10
 B8|2026-05-20|.env POSTGRES_DATA_PATH=C:/facetracker/postgres_data violates V8|move to Y:/faces/postgres_data
 B9|2026-05-20|Docker WSL VHDX bloated 321GB (slack)|wsl shutdown + Optimize-VHD; add periodic compact
+
+§D — Architectural Decisions
+id|date|decision|rationale
+D1|2026-06-07|Identity subsystem: Option A (wire it up)|Incremental clustering already runs post-scan. API endpoints for merge/split/rename/list-faces now implemented. Re-cluster with lower threshold to collapse singletons is a separate operational step (scripts/cluster_faces.py --mode=full --threshold=0.5 --confirm). Identity is a core product feature, not aspirational.

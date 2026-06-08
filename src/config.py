@@ -136,6 +136,10 @@ class Settings(BaseSettings):
     identity_cluster_threshold: float = 0.6
     # if caching is not being implemented.
    
+    # API authentication
+    # Static bearer token for /api/v1 routes. Empty string disables auth.
+    api_token: str = ""
+
     # Database
     postgres_host: str = "localhost"
     postgres_port: int = 5432
