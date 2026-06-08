@@ -17,3 +17,32 @@ venv/
 
 # Node — keep dependencies out of git
 node_modules/
+# AI / editor dot directories (managed via sourcerepo)
+.*
+!.github/
+!.gitignore
+!.gitattributes
+!.gitmodules
+!.editorconfig
+!.nvmrc
+!.node-version
+!.python-version
+!.tool-versions
+!.prettierrc*
+!.eslintrc*
+!.stylelintrc*
+!.babelrc*
+!.browserslistrc
+!.dockerignore
+!.npmrc
+!.yarnrc
+!.yarnrc.yml
+!.env.example
+!.env.template
+!.env.sample
+!.sourcery.yml
+!.deepsource.toml
+skills/
+skills-lock.json
+docs/
+templates/
