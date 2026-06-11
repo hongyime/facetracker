@@ -50,7 +50,12 @@ param(
     [string]$OneDriveExe = 'C:\Program Files\Microsoft OneDrive\OneDrive.exe',
     [switch]$DryRun,
     [switch]$Verbose,
-    [switch]$NoFreeupSpace
+    # /freeup-space disabled by default: spawning OneDrive.exe per-file
+    # opens File Explorer windows and lags the system. attrib +U -P alone
+    # is the documented eviction signal; OneDrive evicts on next sync pass.
+    # Pass -UseFreeupSpace to re-enable if you want faster eviction at the
+    # cost of Explorer popups.
+    [switch]$UseFreeupSpace
 )
 
 $ErrorActionPreference = 'Stop'
@@ -107,13 +112,14 @@ $failed = 0
 $alreadyCloud = 0
 $idsToFlip = New-Object System.Collections.Generic.List[int]
 
-# Pre-flight check: does the OneDrive client exist? If not, fall back to
-# attrib-only mode (legacy behaviour). Don't fail the whole run.
-$useFreeupSpace = (-not $NoFreeupSpace) -and (Test-Path -LiteralPath $OneDriveExe)
-if ($NoFreeupSpace) {
-    Write-Log "freeup_space_disabled_by_flag"
+# Pre-flight check: /freeup-space is opt-in (disabled by default) because
+# spawning OneDrive.exe per-file opens Explorer windows and lags the system.
+# attrib +U -P alone is the documented signal.
+$doFreeupSpace = $UseFreeupSpace -and (Test-Path -LiteralPath $OneDriveExe)
+if (-not $UseFreeupSpace) {
+    Write-Log "freeup_space_disabled (default; pass -UseFreeupSpace to enable)"
 } elseif (-not (Test-Path -LiteralPath $OneDriveExe)) {
-    Write-Log "freeup_space_unavailable: $OneDriveExe not found, falling back to attrib-only"
+    Write-Log "freeup_space_unavailable: $OneDriveExe not found, attrib-only"
 }
 
 foreach ($row in $rows) {
@@ -161,18 +167,20 @@ foreach ($row in $rows) {
         }
         $evicted++
 
-        # Signal 2 (best-effort): /freeup-space tells OneDrive to evict
-        # this specific path on its next sync tick rather than waiting
-        # for its idle scan. Async; we fire-and-forget.
-        if ($useFreeupSpace) {
+        # Signal 2 (opt-in, off by default): /freeup-space tells OneDrive
+        # to evict immediately. Disabled because spawning OneDrive.exe per
+        # file opens Explorer windows and causes system lag. Pass
+        # -UseFreeupSpace to re-enable.
+        if ($doFreeupSpace) {
             try {
                 $proc = Start-Process -FilePath $OneDriveExe `
                     -ArgumentList @('/freeup-space', $winPath) `
                     -PassThru -WindowStyle Hidden -ErrorAction Stop
                 $freedup++
                 if ($Verbose) { Write-Log "freeup_space_spawned id=$id pid=$($proc.Id) path='$winPath'" }
+                # Throttle: avoid spawning too many OneDrive.exe processes
+                Start-Sleep -Milliseconds 500
             } catch {
-                # Don't roll back attrib success on this; just log and continue.
                 Write-Log "freeup_space_spawn_failed id=$id path='$winPath' err='$($_.Exception.Message)'"
             }
         }
