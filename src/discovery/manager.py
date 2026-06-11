@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 
 from src.utils.logging import get_logger
+from src.utils.connectivity import ConnectivityGuard
 from src.discovery.scanner import DriveScanner, FileRecord
 from src.discovery.manifest import FileManifestManager
 from src.discovery.watcher import FileWatcher
@@ -105,6 +106,11 @@ class IndexingManager:
         self._queue_high_water: int = 0
         self._processing_anchor_time: Optional[datetime] = None
         
+        # Connectivity guard — gates scan + worker loops on DB health.
+        # Logs once on drop, once on recovery, quiet in between.
+        self._scan_guard = ConnectivityGuard(db.engine, poll_interval=15, label="ScanLoop")
+        self._worker_guard = ConnectivityGuard(db.engine, poll_interval=10, label="Worker")
+
         # Stats
         self.last_scan_completed: Optional[datetime] = None
         
@@ -298,6 +304,9 @@ class IndexingManager:
     def _scan_loop(self) -> None:
         """Main loop for periodic drive scanning."""
         while not self._stop_event.is_set():
+            # Block quietly if DB is unreachable (internet loss, postgres restart).
+            if not self._scan_guard.wait_for_db(self._stop_event):
+                break  # stop_event fired
             try:
                 self.is_scanning = True
                 self.scan_start_time = datetime.now()
@@ -391,17 +400,23 @@ class IndexingManager:
                     time.sleep(1)
                     
             except Exception as e:
-                logger.error(f"Error in scan loop: {e}")
                 self.is_scanning = False
-                # Exponential backoff: 60s → 120s → 240s → 480s → cap at 600s.
-                # Avoids hammering a broken DB or full disk every minute.
-                _backoff = getattr(self, "_scan_error_backoff", 60)
-                logger.info(f"Scan loop retry in {_backoff}s")
-                for _ in range(_backoff):
-                    if self._stop_event.is_set():
-                        break
-                    time.sleep(1)
-                self._scan_error_backoff = min(_backoff * 2, 600)
+                # If DB is unreachable, skip the error log — the
+                # connectivity guard at the top of the next iteration
+                # will handle the quiet wait. Only log real application
+                # errors.
+                if self._scan_guard.is_healthy():
+                    logger.error(f"Error in scan loop: {e}")
+                    _backoff = getattr(self, "_scan_error_backoff", 60)
+                    logger.info(f"Scan loop retry in {_backoff}s")
+                    for _ in range(_backoff):
+                        if self._stop_event.is_set():
+                            break
+                        time.sleep(1)
+                    self._scan_error_backoff = min(_backoff * 2, 600)
+                else:
+                    # DB is down — next iteration's wait_for_db handles it
+                    pass
                 
     def _run_incremental_clustering(self) -> None:
         """Assign any unmapped faces to existing or new identity clusters.
@@ -496,6 +511,13 @@ class IndexingManager:
         from sqlalchemy import text
 
         log_prefix = "[recovery]"
+
+        # Wait for DB before starting recovery — on boot the DB container
+        # may still be initialising when this thread runs.
+        guard = ConnectivityGuard(self.db.engine, poll_interval=10, label="Recovery")
+        if not guard.wait_for_db(self._stop_event):
+            return  # stop_event fired before DB came up
+
         try:
             session = self.db.SessionLocal()
         except Exception as e:
@@ -630,6 +652,11 @@ class IndexingManager:
                     record = self.processing_queue.get(timeout=1)
                 except queue.Empty:
                     continue
+
+                # Gate on DB health before processing — if DB dropped while
+                # we were waiting on the queue, pause quietly until it's back.
+                if not self._worker_guard.wait_for_db(self._stop_event):
+                    break  # stop_event fired
 
                 # Anchor "processing started" time for rate calculation.
                 # First-pull-wins; never resets (rolling-rate cumulative

@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from src.storage.database import Base, Database
 from src.storage.faiss_index import BatchedFAISSIndex
+from src.utils.connectivity import ConnectivityGuard
 
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,9 @@ class FaissReaper:
 
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._guard = ConnectivityGuard(
+            database.engine, poll_interval=15, label="FaissReaper"
+        )
 
     # --- lifecycle ---
 
@@ -152,11 +156,15 @@ class FaissReaper:
     def _run(self) -> None:
         tick = 0
         while not self._stop.is_set():
+            # Gate on DB health — if postgres is down (machine boot, network
+            # loss), block quietly here until it's back. Logs once on drop
+            # and once on recovery; no spam in between.
+            if not self._guard.wait_for_db(self._stop):
+                break  # stop event fired
             try:
                 self._reclaim_stuck()
                 drained = self._drain_once()
                 tick += 1
-                # Prune committed rows every ~100 ticks (~50s at default poll).
                 if tick % 100 == 0:
                     self._prune_committed()
                 if drained == 0:

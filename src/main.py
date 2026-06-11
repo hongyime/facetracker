@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
 
     Lifecycle order matters:
 
-      startup:  db -> faiss -> reaper -> processor -> indexing manager
+      startup:  wait-for-postgres -> db -> faiss -> reaper -> processor -> indexing manager
       shutdown: indexing manager -> reaper -> db
 
     The reaper is started BEFORE the indexing manager so any face the
@@ -37,6 +37,14 @@ async def lifespan(app: FastAPI):
     """
     # Startup
     logger.info("Starting Face Tracker API...")
+
+    # Wait for postgres to be reachable before initialising anything.
+    # On machine boot the DB container may still be starting; this blocks
+    # quietly (one log line every 30s) instead of crash-looping.
+    from src.utils.connectivity import wait_for_postgres_startup
+    if not wait_for_postgres_startup(settings.database_url, timeout=600):
+        logger.error("Postgres never became reachable — aborting startup")
+        raise RuntimeError("Postgres unavailable after startup timeout")
 
     setup_logging(settings.log_level)
 
