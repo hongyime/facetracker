@@ -13,6 +13,10 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
   api:
     build: .
@@ -55,11 +59,11 @@ services:
         limits:
           # Memory cap — actual usage ~1.4GB as of 2026-06; 4G gives plenty
           # of headroom without reserving half the host RAM.
-          memory: 4G
+          memory: 1024M
           # CPU cap — index_workers=1 means one core for detection. 1.0 keeps
           # the container from hogging the machine; bump to 1.5-2.0 if you
           # want faster crawl and your host isn't sluggish.
-          cpus: "1.0"
+          cpus: "0.5"
 
   dashboard:
     build:
@@ -80,6 +84,10 @@ services:
     depends_on:
       - api
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
 networks:
   default:
