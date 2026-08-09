@@ -1,6 +1,5 @@
 # Face Tracker - Private Face Search Engine
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-green.svg)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
@@ -97,7 +96,7 @@ A **production-ready, private face search engine** that indexes millions of face
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/bryanseah234/facetracker.git
+git clone https://github.com/theprawnorganisation/facetracker.git
 cd facetracker
 ```
 
@@ -512,6 +511,10 @@ Contributions welcome! Please:
 
 ---
 
-**Made with ❤️ by bryanseah234**
+**Made with ❤️ by theprawnorganisation**
 
 ⭐ Give us a star if you find this useful!
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
