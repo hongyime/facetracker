@@ -17,9 +17,17 @@ venv/
 
 # Node — keep dependencies out of git
 node_modules/
+templates/
+
 # AI / editor dot directories (managed via sourcerepo)
 .*
 !.github/
+!.agents/
+.agents/*
+!.agents/STATE.md
+!.agents/JOURNAL.md
+!.agents/handoffs/
+!.agents/handoffs/**
 !.gitignore
 !.gitattributes
 !.gitmodules
@@ -45,4 +53,4 @@ node_modules/
 skills/
 skills-lock.json
 docs/
-templates/
+# End AI / editor dot directories (managed via sourcerepo)
