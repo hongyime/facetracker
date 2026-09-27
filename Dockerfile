@@ -20,7 +20,9 @@ RUN useradd -r -u 1001 -m appuser \
 
 FROM dependencies AS dev
 COPY requirements.txt /tmp/dev-requirements.txt
-RUN pip install --no-cache-dir -r /tmp/dev-requirements.txt watchfiles==1.3.0
+RUN pip install --no-cache-dir -r /tmp/dev-requirements.txt watchfiles==1.3.0 \
+    && mkdir -p /app/src /app/config \
+    && chown appuser:appuser /app/src /app/config
 USER appuser
 EXPOSE 8000
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/src", "--reload-dir", "/app/config"]

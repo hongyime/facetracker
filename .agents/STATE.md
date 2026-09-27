@@ -40,3 +40,8 @@ CLEAN — no real secrets found.
 
 ## Next Steps
 None required. Repo is in maintenance mode (legacy face tracker tool).
+
+
+## 2026-09-27: Development sync ownership
+
+The API development stage now creates its source/config sync destinations and gives its existing non-root user ownership. This permits Docker Compose watch to seed and update those paths without elevated runtime privileges. The production stage and dependency declarations are unchanged. The first development build and actual SMB sync smoke are tracked separately.
