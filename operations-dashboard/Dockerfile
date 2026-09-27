@@ -4,6 +4,7 @@ COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 
 FROM frontend-dependencies AS frontend-dev
+COPY --chown=node:node frontend/ /app/frontend/
 RUN chown -R node:node /app/frontend
 USER node
 EXPOSE 3000
@@ -28,6 +29,7 @@ RUN useradd -u 1001 -m opsuser && chown -R opsuser:opsuser /app
 
 FROM dependencies AS dev
 RUN pip install --no-cache-dir watchfiles==1.3.0
+COPY --chown=opsuser:opsuser backend/ /app/backend/
 USER opsuser
 EXPOSE 8700
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8700", "--reload", "--reload-dir", "/app/backend"]
