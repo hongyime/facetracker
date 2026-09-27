@@ -14,16 +14,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /opt/venv /opt/venv
+RUN useradd -r -u 1001 -m appuser \
+    && mkdir -p /app/storage/thumbnails /app/storage/cache /home/appuser/.insightface/models \
+    && chown -R appuser:appuser /app/storage /home/appuser
 
 FROM dependencies AS dev
 COPY requirements.txt /tmp/dev-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/dev-requirements.txt watchfiles==1.3.0
+USER appuser
 EXPOSE 8000
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/src", "--reload-dir", "/app/config"]
 
 FROM dependencies AS production
 COPY src/ ./src/
 COPY config/ ./config/
-RUN mkdir -p /app/storage/thumbnails /app/storage/cache
+USER appuser
 EXPOSE 8000
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

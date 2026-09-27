@@ -37,7 +37,7 @@ services:
       - ./config:/app/config:ro
       - ./dev-input:/app/input:ro
       - dev_storage:/app/storage
-      - dev_models:/root/.insightface/models
+      - dev_models:/home/appuser/.insightface/models
     ports:
       - "127.0.0.1:${DEV_API_PORT:-18000}:8000"
     depends_on:
