@@ -28,7 +28,7 @@ function Show-Attrs {
 
 # Auto-pick a target if none given: grab a known-OneDrive small PNG/JPG.
 if ([string]::IsNullOrEmpty($Path)) {
-    $candidates = Get-ChildItem -LiteralPath "C:\Users\bryan\OneDrive" -Recurse -File -Include *.png,*.jpg -ErrorAction SilentlyContinue |
+    $candidates = Get-ChildItem -LiteralPath "${env:USERPROFILE}\OneDrive" -Recurse -File -Include *.png,*.jpg -ErrorAction SilentlyContinue |
         Where-Object {
             $_.Length -lt 1000000 -and
             (($_.Attributes -band [IO.FileAttributes]::Offline) -ne 0)

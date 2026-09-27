@@ -1,34 +1,29 @@
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    libgl1 \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    libgomp1 \
-    gcc \
-    g++ \
+FROM python:3.11-slim AS builder
+WORKDIR /build
+RUN apt-get update && apt-get install -y --no-install-recommends gcc g++ \
     && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt /tmp/requirements.txt
+RUN sed '/^[Pp][Yy][Tt][Ee][Ss][Tt]/d' /tmp/requirements.txt > /tmp/runtime-requirements.txt \
+    && python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir -r /tmp/runtime-requirements.txt
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+FROM python:3.11-slim AS dependencies
+ENV PATH="/opt/venv/bin:${PATH}" PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /opt/venv /opt/venv
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+FROM dependencies AS dev
+COPY requirements.txt /tmp/dev-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/dev-requirements.txt watchfiles==1.3.0
+EXPOSE 8000
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/src", "--reload-dir", "/app/config"]
 
-# Copy application code
+FROM dependencies AS production
 COPY src/ ./src/
 COPY config/ ./config/
-
-# Create storage directories
 RUN mkdir -p /app/storage/thumbnails /app/storage/cache
-
-# Expose port
 EXPOSE 8000
-
-# Run the application
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

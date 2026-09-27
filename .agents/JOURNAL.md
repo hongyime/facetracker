@@ -11,3 +11,6 @@
   - tests/comprehensive/test_comprehensive_suite.py:1454 — "secret.jpg" is a test fixture filename
 - Working tree: clean
 - No real security issues found; repo in stable maintenance mode
+
+## 2026-09-27 — Isolated container development
+Added explicit development Compose, bind-mounted polling reload, isolated dependency/data volumes, dev/production image stages, guarded GHCR retention and cross-platform instructions. Compose/configuration contracts, Vite configuration checks, retention fixtures, and Windows/WSL reload fixtures passed. No builds, pulls, application starts, commits or pushes were performed; deployment health and real SMB mount behavior are not claimed.

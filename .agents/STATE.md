@@ -1,3 +1,17 @@
+# Container development checkpoint — 2026-09-27
+
+Applied an explicit, isolated `compose.dev.yaml` with Python/Vite polling reload,
+dependency isolation, and local images that cannot pull implicitly. Added dev
+and production stages, remote GHCR publication with guarded retention, and
+Windows/Linux instructions. Production Compose defaults are preserved.
+
+Validation: Compose parsing and configuration contracts pass; facetracker
+frontend `tsc --noEmit` passes in an isolated dependency fixture. Vite proxy and
+polling checks, 12 retention tests, and watchfiles process reload fixtures on
+Windows and WSL pass. No container images were built, pulled, or started; actual
+SMB bind-mount behavior, app integration, and image sizes remain to verify on a
+development host / in CI. Historical status below describes earlier work.
+
 # STATE — facetracker
 
 Last updated: 2026-09-16

@@ -1,0 +1,89 @@
+name: facetracker-dev
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: facetracker
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DEV_POSTGRES_PASSWORD:-dev-only-change-me}
+    volumes:
+      - dev_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d facetracker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    image: facetracker-dev/api:local
+    pull_policy: never
+    build:
+      context: .
+      target: dev
+    init: true
+    env_file: .env.dev
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: facetracker
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DEV_POSTGRES_PASSWORD:-dev-only-change-me}
+      FACE_STORAGE_ROOT: /app/storage
+      DRIVE_SOURCES: '[{"path":"/app/input","type":"local"}]'
+      WATCHFILES_FORCE_POLLING: "true"
+      WATCHFILES_POLL_DELAY_MS: "500"
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config:ro
+      - ./dev-input:/app/input:ro
+      - dev_storage:/app/storage
+      - dev_models:/root/.insightface/models
+    ports:
+      - "127.0.0.1:${DEV_API_PORT:-18000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  dashboard:
+    image: facetracker-dev/dashboard:local
+    pull_policy: never
+    build:
+      context: ./operations-dashboard
+      target: dev
+    init: true
+    env_file: .env.dev
+    environment:
+      FACETRACKER_API_URL: http://api:8000
+      WATCHFILES_FORCE_POLLING: "true"
+      WATCHFILES_POLL_DELAY_MS: "500"
+    volumes:
+      - ./operations-dashboard/backend:/app/backend
+    ports:
+      - "127.0.0.1:${DEV_DASHBOARD_PORT:-18700}:8700"
+    depends_on:
+      - api
+
+  frontend:
+    image: facetracker-dev/frontend:local
+    pull_policy: never
+    build:
+      context: ./operations-dashboard
+      target: frontend-dev
+    init: true
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      DEV_DASHBOARD_TARGET: http://dashboard:8700
+      DEV_FACETRACKER_TARGET: http://api:8000
+      VITE_FACETRACKER_API_BASE: /face-api/api/v1
+    volumes:
+      - ./operations-dashboard/frontend:/app/frontend
+      - /app/frontend/node_modules
+    ports:
+      - "127.0.0.1:${DEV_FRONTEND_PORT:-13000}:3000"
+    depends_on:
+      - dashboard
+
+volumes:
+  dev_postgres:
+  dev_storage:
+  dev_models:
