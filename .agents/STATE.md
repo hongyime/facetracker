@@ -45,3 +45,12 @@ None required. Repo is in maintenance mode (legacy face tracker tool).
 ## 2026-09-27: Development sync ownership
 
 The API development stage now creates its source/config sync destinations and gives its existing non-root user ownership. This permits Docker Compose watch to seed and update those paths without elevated runtime privileges. The production stage and dependency declarations are unchanged. The first development build and actual SMB sync smoke are tracked separately.
+
+## 2026-09-27: Explicit SMB watch mode
+
+Development images now include ordinary source in their initial build, after dependency installation and owned by their existing non-root users. The explicit compose.watch.yaml overlay delivers subsequent code edits with sync only, removes source bind mounts and the anonymous frontend dependency volume, and keeps model/database/storage/input in separate dev volumes. Initial input is empty. Use the documented no-build/no-pull watch command, followed by scoped down; only disposable test projects should delete their volumes. Production stages remain unchanged. Static independent review passed; the first dev image builds and real SMB edit checks are tracked separately.
+
+
+## 2026-09-27: Explicit installed PostgreSQL driver
+
+Real dev startup exposed SQLAlchemy selecting unavailable psycopg for the implicit PostgreSQL URL. Select installed psycopg2 explicitly in Settings.database_url. Four isolated checks in the existing dev image verify driver loading and URL behavior without a database connection; the original source reproduces ModuleNotFoundError. No dependency or image rebuild is required for this source fix. Full API startup remains a separate runtime check.

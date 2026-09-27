@@ -534,8 +534,10 @@ Run from this repository in PowerShell or a Linux shell:
 python -c "from pathlib import Path; Path('.env.dev').touch(exist_ok=True); Path('dev-input').mkdir(exist_ok=True)"
 # Initial dev image build; repeat only when dependency manifests/system packages change:
 docker compose --env-file .env.dev -f compose.dev.yaml build
+# Explicit first-time acquisition of the development database image:
+docker compose --env-file .env.dev -f compose.dev.yaml pull postgres
 # Daily development:
-docker compose --env-file .env.dev -f compose.dev.yaml up --no-build
+docker compose --env-file .env.dev -f compose.dev.yaml up --no-build --pull never
 ~~~
 
 Use `python3` if your Linux installation does not provide `python`.
@@ -548,14 +550,14 @@ Production `.env`, drive mounts, databases, and data volumes are not inherited.
 Python polling reloaders restart application processes after source edits. Vite
 uses polling and proxies API/WebSocket traffic over the development network.
 This supports Windows and SMB mounts where filesystem events may be absent;
-the Docker host must still be able to bind-mount this checkout. Test an edit on
-the actual host, or use a host-local clone if its mapped SMB drive is unavailable.
+the bind-mount route requires the Docker host to access the checkout. Use the
+sync overlay below when the mapped SMB drive is unavailable to the Docker host.
 No source edit rebuilds an image or recreates a container.
 
 After a dependency build, refresh **only anonymous dependency volumes**:
 
 ~~~sh
-docker compose --env-file .env.dev -f compose.dev.yaml up --no-build --renew-anon-volumes
+docker compose --env-file .env.dev -f compose.dev.yaml up --no-build --pull never --renew-anon-volumes
 ~~~
 
 Named development database/model/data volumes are retained. Do not use
@@ -598,10 +600,33 @@ On Linux, macOS, or WSL, use `bash facetracker.sh build` for the initial depende
 
 ### SMB and remote Docker hosts
 
-Run Compose from a checkout path that the selected Docker daemon can access.
-A mapped Windows drive is not automatically available inside WSL or on a remote
-Linux Docker host; use that host's mounted share path or a local checkout when
-necessary. Polling handles missing file-change events after the bind mount works;
-it cannot make an inaccessible path visible. The maintenance checks validated
-Compose configuration and Windows/Linux reload fixtures, but did not launch this
-full stack or verify its actual SMB bind mount.
+When the Docker host cannot bind-mount the checkout, use Docker Compose 2.32.2+
+and the explicit watch overlay after the initial dev build and database pull:
+
+~~~sh
+docker compose --env-file .env.dev -f compose.dev.yaml -f compose.watch.yaml up --no-build --pull never --watch
+~~~
+
+The first dev image includes only the ordinary application source after dependency
+installation. Later edits reach the same containers through `action: sync`;
+there are no rebuild rules. Python dependencies remain in `/opt/venv` and Node
+dependencies stay in the image because dependency folders/manifests are excluded
+from synchronization. The overlay removes the source bind mounts and anonymous
+dependency volume, so the Docker host does not need access to the SMB drive.
+
+This mode uses an empty, dedicated `dev_input` volume instead of mounting host
+input data. Database, storage and model volumes remain separate from production.
+The bind-mount mode above remains available for host-accessible synthetic input.
+Private files are excluded from build and watch contexts, including mixed-case
+environment, credential and key filenames.
+
+After stopping the watch command, remove dev containers and networks while
+retaining the database/model/input volumes:
+
+~~~sh
+docker compose --env-file .env.dev -f compose.dev.yaml -f compose.watch.yaml down --remove-orphans
+~~~
+
+For disposable tests, use a distinct `-p facetracker-smoke-dev` on every command
+and add `--volumes` to that project's final `down`. Keep reusable dev images;
+rebuild them only when dependency manifests or system packages change.

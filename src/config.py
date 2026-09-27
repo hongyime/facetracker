@@ -190,7 +190,7 @@ class Settings(BaseSettings):
     def database_url(self) -> str:
         """Get PostgreSQL database URL."""
         return (
-            f"postgresql://{self.postgres_user}:{self.postgres_password}"
+            f"postgresql+psycopg2://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
     
