@@ -18,3 +18,5 @@ Added explicit development Compose, bind-mounted polling reload, isolated depend
 - 2026-09-27: Pre-create API development sync paths owned by appuser so initial source delivery can run without root; production is unchanged.
 
 - 2026-09-27: Seed ordinary code during the initial dev build and add an explicit sync-only overlay for SMB/remote Docker hosts; keep source edits free of rebuilds and isolate private dev input in an empty named volume.
+
+- 2026-09-27: Select installed psycopg2 explicitly after real startup reproduced an implicit-driver mismatch; four isolated existing-image checks pass without connections.
