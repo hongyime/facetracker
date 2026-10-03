@@ -11,3 +11,8 @@
   - tests/comprehensive/test_comprehensive_suite.py:1454 — "secret.jpg" is a test fixture filename
 - Working tree: clean
 - No real security issues found; repo in stable maintenance mode
+
+## 2026-09-27 — Isolated container development
+Added explicit development Compose, bind-mounted polling reload, isolated dependency/data volumes, dev/production image stages, guarded GHCR retention and cross-platform instructions. Compose/configuration contracts, Vite configuration checks, retention fixtures, and Windows/WSL reload fixtures passed. No builds, pulls, application starts, commits or pushes were performed; deployment health and real SMB mount behavior are not claimed.
+
+2026-09-27: Backported merged SMB development Watch and explicit PostgreSQL driver maintenance to this checkout with guarded, narrow edits. Four local synthetic URL checks and the merged local Compose parse passed (three application services, four sync rules, no source binds or implicit application pulls). Existing production Docker stages, dependency manifests, branch, HEAD, staged index, and prior local work were preserved. The separate isolated runtime verification passed 26 checks; this exact canonical Docker recipe was not rebuilt or launched. No canonical commit, push, reset, or stash was performed.

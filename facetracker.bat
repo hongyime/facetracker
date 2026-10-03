@@ -106,7 +106,7 @@ goto menu
 :start
 echo.
 echo [start] starting facetracker stack...
-docker compose up -d --build api
+docker compose up -d --no-build --pull never api
 goto pause_return
 
 :stop

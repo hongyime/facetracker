@@ -1,0 +1,112 @@
+# Explicit overlay for SMB or remote Docker hosts. Build the dev images once.
+# Code edits synchronize into the same containers; this file has no rebuild rules.
+services:
+  api:
+    volumes: !override
+      - dev_input:/app/input:ro
+      - dev_storage:/app/storage
+      - dev_models:/home/appuser/.insightface/models
+    develop:
+      watch:
+      - action: sync
+        path: ./src
+        target: /app/src
+        initial_sync: true
+        ignore:
+          - "**/.[eE][nN][vV]*"
+          - "**/*[sS][eE][cC][rR][eE][tT]*"
+          - "**/*[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL]*"
+          - "**/*.[pP][eE][mM]"
+          - "**/*.[kK][eE][yY]"
+          - "**/*.[pP]12"
+          - "**/*.[pP][fF][xX]"
+          - "**/__pycache__/**"
+          - "**/*.pyc"
+          - "**/node_modules/**"
+          - "**/.venv/**"
+          - "**/dist/**"
+          - "**/build/**"
+          - "**/requirements*.txt"
+          - "**/package.json"
+          - "**/package-lock.json"
+          - "**/pyproject.toml"
+          - "**/uv.lock"
+      - action: sync
+        path: ./config
+        target: /app/config
+        initial_sync: true
+        ignore:
+          - "**/.[eE][nN][vV]*"
+          - "**/*[sS][eE][cC][rR][eE][tT]*"
+          - "**/*[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL]*"
+          - "**/*.[pP][eE][mM]"
+          - "**/*.[kK][eE][yY]"
+          - "**/*.[pP]12"
+          - "**/*.[pP][fF][xX]"
+          - "**/__pycache__/**"
+          - "**/*.pyc"
+          - "**/node_modules/**"
+          - "**/.venv/**"
+          - "**/dist/**"
+          - "**/build/**"
+          - "**/requirements*.txt"
+          - "**/package.json"
+          - "**/package-lock.json"
+          - "**/pyproject.toml"
+          - "**/uv.lock"
+  dashboard:
+    volumes: !reset []
+    develop:
+      watch:
+      - action: sync
+        path: ./operations-dashboard/backend
+        target: /app/backend
+        initial_sync: true
+        ignore:
+          - "**/.[eE][nN][vV]*"
+          - "**/*[sS][eE][cC][rR][eE][tT]*"
+          - "**/*[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL]*"
+          - "**/*.[pP][eE][mM]"
+          - "**/*.[kK][eE][yY]"
+          - "**/*.[pP]12"
+          - "**/*.[pP][fF][xX]"
+          - "**/__pycache__/**"
+          - "**/*.pyc"
+          - "**/node_modules/**"
+          - "**/.venv/**"
+          - "**/dist/**"
+          - "**/build/**"
+          - "**/requirements*.txt"
+          - "**/package.json"
+          - "**/package-lock.json"
+          - "**/pyproject.toml"
+          - "**/uv.lock"
+  frontend:
+    volumes: !reset []
+    develop:
+      watch:
+      - action: sync
+        path: ./operations-dashboard/frontend
+        target: /app/frontend
+        initial_sync: true
+        ignore:
+          - "**/.[eE][nN][vV]*"
+          - "**/*[sS][eE][cC][rR][eE][tT]*"
+          - "**/*[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL]*"
+          - "**/*.[pP][eE][mM]"
+          - "**/*.[kK][eE][yY]"
+          - "**/*.[pP]12"
+          - "**/*.[pP][fF][xX]"
+          - "**/__pycache__/**"
+          - "**/*.pyc"
+          - "**/node_modules/**"
+          - "**/.venv/**"
+          - "**/dist/**"
+          - "**/build/**"
+          - "**/requirements*.txt"
+          - "**/package.json"
+          - "**/package-lock.json"
+          - "**/pyproject.toml"
+          - "**/uv.lock"
+volumes:
+  dev_input:

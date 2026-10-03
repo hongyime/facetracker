@@ -140,7 +140,7 @@ Build a **PimEyes-style private face search engine** that:
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐          │
 │  │  C:/ (SSD)  │ │  Y:/ (HDD)  │ │  E:/ (USB)  │ │ OneDrive    │          │
 │  │             │ │             │ │             │ │ C:/users/   │          │
-│  │ • Scan all  │ │ • Storage   │ │ • On mount  │ │ bryan/onedr │          │
+│  │ • Scan all  │ │ • Storage   │ │ • On mount  │ │ the maintainer/onedr │          │
 │  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘          │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -542,7 +542,7 @@ CREATE TABLE faiss_index_meta (
 │   { "path": "D:/", "type": "local", "priority": 2 },                        │
 │   { "path": "Y:/", "type": "local", "priority": 0, "exclude": true },      │
 │   { "path": "E:/", "type": "usb", "on_mount": true },                       │
-│   { "path": "C:/Users/bryan/onedrive", "type": "onedrive", "priority": 3 } │
+│   { "path": "<user-home>/onedrive", "type": "onedrive", "priority": 3 } │
 │ ]                                                                           │
 │                                                                               │
 │ EXCLUDE_PATHS = [                                                            │
@@ -1969,7 +1969,7 @@ DRIVE_SOURCES=[
     {"path": "D:/", "type": "local", "priority": 2},
     {"path": "Y:/", "type": "local", "priority": 0, "exclude": true},
     {"path": "E:/", "type": "usb", "on_mount": true},
-    {"path": "C:/Users/bryan/onedrive", "type": "onedrive", "priority": 3}
+    {"path": "<user-home>/onedrive", "type": "onedrive", "priority": 3}
 ]
 
 EXCLUDE_PATHS=["C:/facetracker", "Y:/faces", "C:/Windows", "C:/Program Files"]
@@ -2354,3 +2354,5 @@ httpx>=0.27.0
 **Document Version:** 4.0
 **Status:** Production-Ready PRD
 **Last Updated:** 2026-05-15
+
+Machine-specific values in this document use privacy placeholders.

@@ -1,7 +1,7 @@
 # compact-docker-vhdx.ps1
 # Reclaims slack space from Docker Desktop's WSL2 VHDX.
 # REQUIRES: Run as Administrator. Will stop all Docker containers temporarily.
-# Target: C:\Users\bryan\AppData\Local\Docker\wsl\disk\docker_data.vhdx (321 GB -> ~20 GB expected)
+# Target: <user-home>\AppData\Local\Docker\wsl\disk\docker_data.vhdx (321 GB -> ~20 GB expected)
 
 $ErrorActionPreference = "Stop"
 
