@@ -29,6 +29,11 @@ templates/
 .env.dev
 dev-input/
 
+
+# Isolated container development input and settings
+.env.dev
+dev-input/
+
 # AI / editor dot directories (managed via sourcerepo)
 .*
 !.github/
@@ -64,7 +69,3 @@ skills/
 skills-lock.json
 docs/
 # End AI / editor dot directories (managed via sourcerepo)
-
-# Isolated container development input and settings
-.env.dev
-dev-input/
