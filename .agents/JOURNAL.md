@@ -16,3 +16,8 @@
 Added explicit development Compose, bind-mounted polling reload, isolated dependency/data volumes, dev/production image stages, guarded GHCR retention and cross-platform instructions. Compose/configuration contracts, Vite configuration checks, retention fixtures, and Windows/WSL reload fixtures passed. No builds, pulls, application starts, commits or pushes were performed; deployment health and real SMB mount behavior are not claimed.
 
 2026-09-27: Backported merged SMB development Watch and explicit PostgreSQL driver maintenance to this checkout with guarded, narrow edits. Four local synthetic URL checks and the merged local Compose parse passed (three application services, four sync rules, no source binds or implicit application pulls). Existing production Docker stages, dependency manifests, branch, HEAD, staged index, and prior local work were preserved. The separate isolated runtime verification passed 26 checks; this exact canonical Docker recipe was not rebuilt or launched. No canonical commit, push, reset, or stash was performed.
+- 2026-09-27: Pre-create API development sync paths owned by appuser so initial source delivery can run without root; production is unchanged.
+
+- 2026-09-27: Seed ordinary code during the initial dev build and add an explicit sync-only overlay for SMB/remote Docker hosts; keep source edits free of rebuilds and isolate private dev input in an empty named volume.
+
+- 2026-09-27: Select installed psycopg2 explicitly after real startup reproduced an implicit-driver mismatch; four isolated existing-image checks pass without connections.

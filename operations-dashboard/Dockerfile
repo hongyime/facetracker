@@ -25,10 +25,10 @@ FROM python:3.12-slim AS dependencies
 ENV PATH="/opt/venv/bin:${PATH}" PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 COPY --from=backend-builder /opt/venv /opt/venv
 WORKDIR /app/backend
+RUN useradd -u 1001 -m opsuser && chown -R opsuser:opsuser /app
 
 FROM dependencies AS dev
 RUN pip install --no-cache-dir watchfiles==1.3.0
-RUN useradd -u 1001 -m opsuser && chown -R opsuser:opsuser /app
 COPY --chown=opsuser:opsuser backend/ /app/backend/
 USER opsuser
 EXPOSE 8700
@@ -37,7 +37,6 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8700", "--reload", "
 FROM dependencies AS production
 COPY backend/ /app/backend/
 COPY --from=frontend-build /app/frontend/dist /app/backend/static
-RUN useradd -m opsuser && chown -R opsuser:opsuser /app
 USER opsuser
 EXPOSE 8700
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8700"]
