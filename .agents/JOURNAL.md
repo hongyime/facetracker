@@ -21,3 +21,5 @@ Added explicit development Compose, bind-mounted polling reload, isolated depend
 - 2026-09-27: Seed ordinary code during the initial dev build and add an explicit sync-only overlay for SMB/remote Docker hosts; keep source edits free of rebuilds and isolate private dev input in an empty named volume.
 
 - 2026-09-27: Select installed psycopg2 explicitly after real startup reproduced an implicit-driver mismatch; four isolated existing-image checks pass without connections.
+
+- 2026-10-13: Migrated operations-dashboard/frontend tailwindcss v3.4.3 to v4.3.3 via the official upgrade tool (resolves Dependabot #72 postcss-selector-parser CVE-2026-104844; v4 Oxide engine drops that package entirely, verified absent from lockfile). CSS moved to @import plus @theme tokens, @utility card, PostCSS plugin now @tailwindcss/postcss, tailwind.config.js removed, classes renamed (outline-hidden, backdrop-blur-xs, rounded-sm). tsc clean, vite build passes. Remaining npm audit highs are pre-existing eslint-toolchain items, unrelated.

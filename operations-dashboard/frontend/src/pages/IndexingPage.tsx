@@ -48,7 +48,7 @@ export default function IndexingPage() {
       />
 
       {onedrive && !onedrive.evict_healthy && (
-        <div className="mb-4 p-3 rounded border border-red-700 bg-red-900/20 text-red-200 text-sm">
+        <div className="mb-4 p-3 rounded-sm border border-red-700 bg-red-900/20 text-red-200 text-sm">
           <div className="font-medium mb-1">
             ⚠ OneDrive eviction daemon unhealthy — {onedrive.revert_pending}{' '}
             files awaiting eviction
@@ -66,7 +66,7 @@ export default function IndexingPage() {
         </div>
       )}
       {onedrive?.evict_healthy && onedrive.ingested_count > 0 && (
-        <div className="mb-4 p-2 rounded border border-emerald-700/40 bg-emerald-900/10 text-emerald-200/80 text-xs">
+        <div className="mb-4 p-2 rounded-sm border border-emerald-700/40 bg-emerald-900/10 text-emerald-200/80 text-xs">
           ✓ OneDrive: {onedrive.ingested_count} ingested,{' '}
           {onedrive.revert_pending} pending eviction, daemon last ran{' '}
           {onedrive.evict_log_age_seconds === null
